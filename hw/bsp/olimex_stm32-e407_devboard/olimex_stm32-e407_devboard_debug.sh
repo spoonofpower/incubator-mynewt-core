@@ -16,33 +16,22 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-# Called: $0 <bsp_path> <binary> [identities...]
-#  - bsp_directory_path is absolute path to hw/bsp/bsp_name
-#  - binary is the path to prefix to target binary, .elf appended to name is
-#    the ELF file
-#  - identities is the project identities string.
-# 
+
+# Called with following variables set:
+#  - CORE_PATH is absolute path to @apache-mynewt-core
+#  - BSP_PATH is absolute path to hw/bsp/bsp_name
+#  - BIN_BASENAME is the path to prefix to target binary,
+#    .elf appended to name is the ELF file
+#  - FEATURES holds the target features string
+#  - EXTRA_JTAG_CMD holds extra parameters to pass to jtag software
+#  - RESET set if target should be reset when attaching
+#  - NO_GDB set if we should not start gdb to debug
 #
-set -x
-if [ $# -lt 2 ]; then
-    echo "Need binary to debug"
-    exit 1
-fi
+. $CORE_PATH/hw/scripts/openocd.sh
 
-MY_PATH=$1
-FILE_NAME=$2.elf
-GDB_CMD_FILE=.gdb_cmds
-
-echo "Debugging" $FILE_NAME
-
-#
-# Block Ctrl-C from getting passed to openocd.
+FILE_NAME=$BIN_BASENAME.elf
+CFG="-f interface/ftdi/olimex-arm-usb-tiny-h.cfg -s $BSP_PATH -f f407.cfg"
 # Exit openocd when gdb detaches.
-#
-set -m
-openocd -f interface/ftdi/olimex-arm-usb-tiny-h.cfg -s $MY_PATH -f f407.cfg -c "gdb_port 3333; telnet_port 4444; stm32f4x.cpu configure -event gdb-detach {shutdown}" -c init -c "reset halt" &
-set +m
+EXTRA_JTAG_CMD="$EXTRA_JTAG_CMD; stm32f4x.cpu configure -event gdb-detach {if {[stm32f4x.cpu curstate] eq \"halted\"} resume;shutdown}"
 
-echo "target remote localhost:3333" > $GDB_CMD_FILE
-arm-none-eabi-gdb -x $GDB_CMD_FILE $FILE_NAME
-rm $GDB_CMD_FILE
+openocd_debug

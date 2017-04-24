@@ -24,15 +24,12 @@ pkg.author: "Apache Mynewt <dev@mynewt.incubator.apache.org>"
 pkg.homepage: "http://mynewt.apache.org/"
 pkg.keywords:
 
-pkg.features:
-    - TEST
 pkg.deps:
     - fs/nffs
-    - libs/bootutil
-    - libs/console/full
-    - libs/mbedtls
-    - libs/os
-    - libs/testreport
-    - libs/testutil
-    - libs/util
+    - boot/bootutil
+    - sys/console/full
+    - crypto/mbedtls
+    - kernel/os
+    - test/testreport
+    - test/testutil
     - sys/config

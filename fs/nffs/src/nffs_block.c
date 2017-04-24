@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -23,7 +23,6 @@
 #include "testutil/testutil.h"
 #include "nffs/nffs.h"
 #include "nffs_priv.h"
-#include "crc16.h"
 
 struct nffs_hash_entry *
 nffs_block_entry_alloc(void)
@@ -39,10 +38,35 @@ nffs_block_entry_alloc(void)
 }
 
 void
-nffs_block_entry_free(struct nffs_hash_entry *entry)
+nffs_block_entry_free(struct nffs_hash_entry *block_entry)
 {
-    assert(nffs_hash_id_is_block(entry->nhe_id));
-    os_memblock_put(&nffs_block_entry_pool, entry);
+    assert(nffs_hash_id_is_block(block_entry->nhe_id));
+    os_memblock_put(&nffs_block_entry_pool, block_entry);
+}
+
+/**
+ * Allocates a block entry.  If allocation fails due to memory exhaustion,
+ * garbage collection is performed and the allocation is retried.  This
+ * process is repeated until allocation is successful or all areas have been
+ * garbage collected.
+ *
+ * @param out_block_entry           On success, the address of the allocated
+ *                                      block gets written here.
+ *
+ * @return                          0 on successful allocation;
+ *                                  FS_ENOMEM on memory exhaustion;
+ *                                  other nonzero on garbage collection error.
+ */
+int
+nffs_block_entry_reserve(struct nffs_hash_entry **out_block_entry)
+{
+    int rc;
+
+    do {
+        *out_block_entry = nffs_block_entry_alloc();
+    } while (nffs_misc_gc_if_oom(*out_block_entry, &rc));
+
+    return rc;
 }
 
 /**
@@ -65,12 +89,13 @@ nffs_block_read_disk(uint8_t area_idx, uint32_t area_offset,
 {
     int rc;
 
+    STATS_INC(nffs_stats, nffs_readcnt_block);
     rc = nffs_flash_read(area_idx, area_offset, out_disk_block,
                          sizeof *out_disk_block);
     if (rc != 0) {
         return rc;
     }
-    if (out_disk_block->ndb_magic != NFFS_BLOCK_MAGIC) {
+    if (!nffs_hash_id_is_block(out_disk_block->ndb_id)) {
         return FS_EUNEXP;
     }
 
@@ -190,7 +215,7 @@ nffs_block_to_disk(const struct nffs_block *block,
 {
     assert(block->nb_inode_entry != NULL);
 
-    out_disk_block->ndb_magic = NFFS_BLOCK_MAGIC;
+    memset(out_disk_block, 0, sizeof *out_disk_block);
     out_disk_block->ndb_id = block->nb_hash_entry->nhe_id;
     out_disk_block->ndb_seq = block->nb_seq;
     out_disk_block->ndb_inode_id =
@@ -217,10 +242,24 @@ nffs_block_delete_from_ram(struct nffs_hash_entry *block_entry)
     struct nffs_block block;
     int rc;
 
+    if (nffs_hash_entry_is_dummy(block_entry)) {
+        /*
+         * it's very limited to what we can do here as the block doesn't have
+         * any way to get to the inode via hash entry. Just delete the
+         * block and return FS_ECORRUPT
+         */
+        nffs_hash_remove(block_entry);
+        nffs_block_entry_free(block_entry);
+        return FS_ECORRUPT;
+    }
+
     rc = nffs_block_from_hash_entry(&block, block_entry);
     if (rc == 0 || rc == FS_ECORRUPT) {
         /* If file system corruption was detected, the resulting block is still
          * valid and can be removed from RAM.
+         * Note that FS_CORRUPT can occur because the owning inode was not
+         * found in the hash table - this can occur during the sweep where
+         * the inodes were deleted ahead of the blocks.
          */
         inode_entry = block.nb_inode_entry;
         if (inode_entry != NULL &&
@@ -303,6 +342,17 @@ nffs_block_from_hash_entry_no_ptrs(struct nffs_block *out_block,
 
     assert(nffs_hash_id_is_block(block_entry->nhe_id));
 
+    memset(out_block, 0, sizeof *out_block);
+
+    if (nffs_hash_entry_is_dummy(block_entry)) {
+        /*
+         * We can't read this from disk so we'll be missing filling in anything
+         * not already in inode_entry (e.g., prev_id).
+         */
+        out_block->nb_hash_entry = block_entry;
+        return FS_ENOENT; /* let caller know it's a partial inode_entry */
+    }
+
     nffs_flash_loc_expand(block_entry->nhe_flash_loc, &area_idx, &area_offset);
     rc = nffs_block_read_disk(area_idx, area_offset, &disk_block);
     if (rc != 0) {
@@ -348,6 +398,20 @@ nffs_block_from_hash_entry(struct nffs_block *out_block,
 
     assert(nffs_hash_id_is_block(block_entry->nhe_id));
 
+    if (nffs_block_is_dummy(block_entry)) {
+        out_block->nb_hash_entry = block_entry;
+        out_block->nb_inode_entry = NULL;
+        out_block->nb_prev = NULL;
+        /*
+         * Dummy block added when inode was read in before real block
+         * (see nffs_restore_inode()). Return success (because there's 
+         * too many places that ned to check for this,
+         * but it's the responsibility fo the upstream code to check
+         * whether this is still a dummy entry.  XXX
+         */
+        return 0;
+        /*return FS_ENOENT;*/
+    }
     nffs_flash_loc_expand(block_entry->nhe_flash_loc, &area_idx, &area_offset);
     rc = nffs_block_read_disk(area_idx, area_offset, &disk_block);
     if (rc != 0) {
@@ -376,10 +440,17 @@ nffs_block_read_data(const struct nffs_block *block, uint16_t offset,
     area_offset += sizeof (struct nffs_disk_block);
     area_offset += offset;
 
+    STATS_INC(nffs_stats, nffs_readcnt_data);
     rc = nffs_flash_read(area_idx, area_offset, dst, length);
     if (rc != 0) {
         return rc;
     }
 
     return 0;
+}
+
+int
+nffs_block_is_dummy(struct nffs_hash_entry *entry)
+{
+    return (entry->nhe_flash_loc == NFFS_FLASH_LOC_NONE);
 }

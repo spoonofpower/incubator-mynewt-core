@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,6 +21,9 @@
 #include <string.h>
 #include "nffs_priv.h"
 #include "nffs/nffs.h"
+#include "fs/fs_if.h"
+
+struct fs_ops nffs_ops;
 
 static struct nffs_dir *
 nffs_dir_alloc(void)
@@ -72,8 +75,9 @@ nffs_dir_open(const char *path, struct nffs_dir **out_dir)
     }
 
     dir->nd_parent_inode_entry = parent_inode_entry;
-    dir->nd_parent_inode_entry->nie_refcnt++;
+    nffs_inode_inc_refcnt(dir->nd_parent_inode_entry);
     memset(&dir->nd_dirent, 0, sizeof dir->nd_dirent);
+    dir->fops = &nffs_ops;
 
     *out_dir = dir;
 
@@ -103,7 +107,8 @@ nffs_dir_read(struct nffs_dir *dir, struct nffs_dirent **out_dirent)
         return FS_ENOENT;
     }
 
-    child->nie_refcnt++;
+    nffs_inode_inc_refcnt(child);
+    dir->nd_dirent.fops = &nffs_ops;
     *out_dirent = &dir->nd_dirent;
 
     return 0;

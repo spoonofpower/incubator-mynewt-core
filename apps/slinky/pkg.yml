@@ -19,21 +19,28 @@
 
 pkg.name: apps/slinky
 pkg.type: app
-pkg.description: Example application which uses a variety of mynewt features.
+pkg.description: "Example application which uses a variety of mynewt features."
 pkg.author: "Apache Mynewt <dev@mynewt.incubator.apache.org>"
 pkg.homepage: "http://mynewt.apache.org/"
 pkg.keywords:
 
 pkg.deps:
-    - fs/nffs
-    - libs/baselibc
-    - libs/console/full
-    - libs/flash_test    
-    - libs/imgmgr
-    - libs/newtmgr
-    - libs/os
-    - libs/shell
-    - libs/util
+    - test/flash_test
+    - mgmt/imgmgr
+    - mgmt/newtmgr
+    - mgmt/newtmgr/transport/nmgr_shell
+    - kernel/os
+    - boot/bootutil
+    - sys/shell
     - sys/config
-    - sys/log
-    - sys/stats
+    - sys/console/full
+    - sys/id
+    - sys/log/full
+    - sys/stats/full
+    - boot/split
+
+pkg.deps.CONFIG_NFFS:
+    - fs/nffs
+
+pkg.deps.CONFIG_FCB:
+    - fs/fcb

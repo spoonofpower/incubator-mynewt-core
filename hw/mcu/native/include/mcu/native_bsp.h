@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,6 +19,16 @@
 #ifndef H_NATIVE_BSP_
 #define H_NATIVE_BSP_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern const struct hal_flash native_flash_dev;
+
+int uart_set_dev(int port, const char *dev_str);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* H_NATIVE_BSP_ */

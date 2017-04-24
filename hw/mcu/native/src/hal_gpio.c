@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -32,14 +32,14 @@ static struct {
 } hal_gpio[HAL_GPIO_NUM_PINS];
 
 int
-hal_gpio_init_in(int pin, gpio_pull_t pull)
+hal_gpio_init_in(int pin, hal_gpio_pull_t pull)
 {
     if (pin >= HAL_GPIO_NUM_PINS) {
         return -1;
     }
     hal_gpio[pin].dir = INPUT;
     switch (pull) {
-    case GPIO_PULL_UP:
+    case HAL_GPIO_PULL_UP:
         hal_gpio[pin].val = 1;
         break;
     default:
@@ -60,18 +60,6 @@ hal_gpio_init_out(int pin, int val)
     return 0;
 }
 
-void
-hal_gpio_set(int pin)
-{
-    hal_gpio_write(pin, 1);
-}
-
-void
-hal_gpio_clear(int pin)
-{
-    hal_gpio_write(pin, 0);
-}
-
 void hal_gpio_write(int pin, int val)
 {
     if (pin >= HAL_GPIO_NUM_PINS) {
@@ -81,7 +69,7 @@ void hal_gpio_write(int pin, int val)
         return;
     }
     hal_gpio[pin].val = (val != 0);
-    printf("hal_gpio set pin %2d to %1d\r", pin, hal_gpio[pin].val); 
+    printf("hal_gpio set pin %2d to %1d\r", pin, hal_gpio[pin].val);
     fflush(stdout);
 }
 
@@ -94,8 +82,10 @@ hal_gpio_read(int pin)
     return hal_gpio[pin].val;
 }
 
-void
+int
 hal_gpio_toggle(int pin)
 {
-    hal_gpio_write(pin, hal_gpio_read(pin) != 1);
+    int pin_state = (hal_gpio_read(pin) != 1);
+    hal_gpio_write(pin, pin_state);
+    return pin_state;
 }

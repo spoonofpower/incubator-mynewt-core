@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -17,48 +17,17 @@
  * under the License.
  */
 
-#include "ble_hs_priv.h"
+#include "syscfg/syscfg.h"
+#include "host/ble_hs.h"
 
-const struct ble_hs_cfg ble_hs_cfg_dflt = {
-    /** HCI settings. */
-    .max_hci_bufs = 8,
-    .max_hci_tx_slots = 8,
-
-    /** Connection settings. */
-    .max_outstanding_pkts_per_conn = 5,
-
-#if NIMBLE_OPT_CONNECT
-    .max_connections = NIMBLE_OPT_MAX_CONNECTIONS,
-    .max_conn_update_entries = 4,
-#else
-    .max_connections = 0,
-    .max_conn_update_entries = 0,
-#endif
-
-    /** GATT server settings. */
-    .max_services = 16,
-    .max_client_configs = 32,
-
-    /** GATT client settings. */
-    .max_gattc_procs = 16,
-
-    /** ATT server settings. */
-    .max_attrs = 64,
-    .max_prep_entries = 6,
-
-    /** L2CAP settings. */
-    .max_l2cap_chans = 16,
-    .max_l2cap_sig_procs = 8,
+struct ble_hs_cfg ble_hs_cfg = {
+    /** Security manager settings. */
+    .sm_io_cap = MYNEWT_VAL(BLE_SM_IO_CAP),
+    .sm_oob_data_flag = MYNEWT_VAL(BLE_SM_OOB_DATA_FLAG),
+    .sm_bonding = MYNEWT_VAL(BLE_SM_BONDING),
+    .sm_mitm = MYNEWT_VAL(BLE_SM_MITM),
+    .sm_sc = MYNEWT_VAL(BLE_SM_SC),
+    .sm_keypress = MYNEWT_VAL(BLE_SM_KEYPRESS),
+    .sm_our_key_dist = MYNEWT_VAL(BLE_SM_OUR_KEY_DIST),
+    .sm_their_key_dist = MYNEWT_VAL(BLE_SM_THEIR_KEY_DIST),
 };
-
-struct ble_hs_cfg ble_hs_cfg;
-
-void
-ble_hs_cfg_init(struct ble_hs_cfg *cfg)
-{
-    if (cfg == NULL) {
-        ble_hs_cfg = ble_hs_cfg_dflt;
-    } else {
-        ble_hs_cfg = *cfg;
-    }
-}

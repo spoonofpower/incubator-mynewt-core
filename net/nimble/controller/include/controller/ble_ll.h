@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -21,17 +21,51 @@
 #define H_BLE_LL_
 
 #include "stats/stats.h"
-#include "hal/hal_cputime.h"
+#include "os/os_eventq.h"
+#include "os/os_callout.h"
+#include "os/os_cputime.h"
+#include "nimble/nimble_opt.h"
+#include "controller/ble_phy.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * XXX:
+ * I guess this should not depend on the 32768 crystal to be honest. This
+ * should be done for TIMER0 as well since the rf clock chews up more current.
+ * Deal with this later.
+ *
+ * Another note: BLE_XTAL_SETTLE_TIME should be bsp related (I guess). There
+ * should be a note in there that the converted usecs to ticks value of this
+ * should not be 0. Thus: if you are using a 32.768 os cputime freq, the min
+ * value of settle time should be 31 usecs. I would suspect all settling times
+ * would exceed 31 usecs.
+ */
+
+/* Determines if we need to turn on/off rf clock */
+#undef BLE_XCVR_RFCLK
+
+/* Transceiver specific definitions */
+#if MYNEWT_VAL(OS_CPUTIME_FREQ) == 32768
+
+/* We will turn on/off rf clock */
+#if MYNEWT_VAL(BLE_XTAL_SETTLE_TIME) != 0
+#define BLE_XCVR_RFCLK
+#endif
+
+#endif
 
 /* Controller revision. */
 #define BLE_LL_SUB_VERS_NR      (0x0000)
 
-/* 
+/*
  * The amount of time that we will wait to hear the start of a receive
  * packet after we have transmitted a packet. This time is at least
- * an IFS time plus the time to receive the preamble and access address (which 
+ * an IFS time plus the time to receive the preamble and access address (which
  * is 40 usecs). We add an additional 32 usecs just to be safe.
- * 
+ *
  * XXX: move this definition and figure out how we determine the worst-case
  * jitter (spec. should have this).
  */
@@ -40,7 +74,7 @@
 /* Packet queue header definition */
 STAILQ_HEAD(ble_ll_pkt_q, os_mbuf_pkthdr);
 
-/* 
+/*
  * Global Link Layer data object. There is only one Link Layer data object
  * per controller although there may be many instances of the link layer state
  * machine running.
@@ -55,17 +89,28 @@ struct ble_ll_obj
 
     /* Number of ACL data packets supported */
     uint8_t ll_num_acl_pkts;
+
+#ifdef BLE_XCVR_RFCLK
+    uint8_t ll_rfclk_state;
+    uint16_t ll_xtal_ticks;
+#else
     uint8_t _pad;
+    uint16_t _pad16;
+#endif
 
     /* ACL data packet size */
     uint16_t ll_acl_pkt_size;
-    uint16_t _pad16;
+
+#ifdef BLE_XCVR_RFCLK
+    uint32_t ll_rfclk_start_time;
+    struct hal_timer ll_rfclk_timer;
+#endif
 
     /* Task event queue */
     struct os_eventq ll_evq;
 
     /* Wait for response timer */
-    struct cpu_timer ll_wfr_timer;
+    struct hal_timer ll_wfr_timer;
 
     /* Packet receive queue (and event). Holds received packets from PHY */
     struct os_event ll_rx_pkt_ev;
@@ -74,6 +119,15 @@ struct ble_ll_obj
     /* Packet transmit queue */
     struct os_event ll_tx_pkt_ev;
     struct ble_ll_pkt_q ll_tx_pkt_q;
+
+    /* Data buffer overflow event */
+    struct os_event ll_dbuf_overflow_ev;
+
+    /* Number of completed packets event */
+    struct os_event ll_comp_pkt_ev;
+
+    /* HW error callout */
+    struct os_callout ll_hw_err_timer;
 };
 extern struct ble_ll_obj g_ble_ll_data;
 
@@ -84,6 +138,7 @@ STATS_SECT_START(ble_ll_stats)
     STATS_SECT_ENTRY(hci_events_sent)
     STATS_SECT_ENTRY(bad_ll_state)
     STATS_SECT_ENTRY(bad_acl_hdr)
+    STATS_SECT_ENTRY(no_bufs)
     STATS_SECT_ENTRY(rx_adv_pdu_crc_ok)
     STATS_SECT_ENTRY(rx_adv_pdu_crc_err)
     STATS_SECT_ENTRY(rx_adv_bytes_crc_ok)
@@ -119,15 +174,6 @@ extern STATS_SECT_DECL(ble_ll_stats) ble_ll_stats;
 #define BLE_LL_STATE_INITIATING     (3)
 #define BLE_LL_STATE_CONNECTION     (4)
 
-/* BLE LL Task Events */
-#define BLE_LL_EVENT_HCI_CMD        (OS_EVENT_T_PERUSER)
-#define BLE_LL_EVENT_ADV_EV_DONE    (OS_EVENT_T_PERUSER + 1)
-#define BLE_LL_EVENT_RX_PKT_IN      (OS_EVENT_T_PERUSER + 2)
-#define BLE_LL_EVENT_SCAN           (OS_EVENT_T_PERUSER + 3)
-#define BLE_LL_EVENT_CONN_SPVN_TMO  (OS_EVENT_T_PERUSER + 4)
-#define BLE_LL_EVENT_CONN_EV_END    (OS_EVENT_T_PERUSER + 5)
-#define BLE_LL_EVENT_TX_PKT_IN      (OS_EVENT_T_PERUSER + 6)
-
 /* LL Features */
 #define BLE_LL_FEAT_LE_ENCRYPTION   (0x01)
 #define BLE_LL_FEAT_CONN_PARM_REQ   (0x02)
@@ -141,7 +187,7 @@ extern STATS_SECT_DECL(ble_ll_stats) ble_ll_stats;
 /* LL timing */
 #define BLE_LL_IFS                  (150)       /* usecs */
 
-/* 
+/*
  * BLE LL device address. Note that element 0 of the array is the LSB and
  * is sent over the air first. Byte 5 is the MSB and is the last one sent over
  * the air.
@@ -157,9 +203,9 @@ struct ble_dev_addr
 #define BLE_IS_DEV_ADDR_RESOLVABLE(addr)    ((addr->u8[5] & 0xc0) == 0x40)
 #define BLE_IS_DEV_ADDR_UNRESOLVABLE(addr)  ((addr->u8[5] & 0xc0) == 0x00)
 
-/* 
+/*
  * LL packet format
- * 
+ *
  *  -> Preamble         (1 byte)
  *  -> Access Address   (4 bytes)
  *  -> PDU              (2 to 257 octets)
@@ -177,29 +223,32 @@ struct ble_dev_addr
 #define BLE_LL_PDU_OVERHEAD     (BLE_LL_OVERHEAD_LEN + BLE_LL_PDU_HDR_LEN)
 
 /**
- * ll pdu tx time get 
- *  
+ * ll pdu tx time get
+ *
  * Returns the number of usecs it will take to transmit a PDU of payload
- * length 'len' bytes. Each byte takes 8 usecs. This routine includes the LL 
- * overhead: preamble (1), access addr (4) and crc (3) and the PDU header (2) 
- * for a total of 10 bytes. 
- * 
- * @param len The length of the PDU payload (does not include include header). 
- * 
+ * length 'len' bytes. Each byte takes 8 usecs. This routine includes the LL
+ * overhead: preamble (1), access addr (4) and crc (3) and the PDU header (2)
+ * for a total of 10 bytes.
+ *
+ * @param len The length of the PDU payload (does not include include header).
+ *
  * @return uint16_t The number of usecs it will take to transmit a PDU of
  *                  length 'len' bytes.
  */
 #define BLE_TX_DUR_USECS_M(len)     (((len) + BLE_LL_PDU_OVERHEAD) << 3)
 
+/* Calculates the time it takes to transmit 'len' bytes */
+#define BLE_TX_LEN_USECS_M(len)     ((len) << 3)
+
 /* Access address for advertising channels */
 #define BLE_ACCESS_ADDR_ADV             (0x8E89BED6)
 
-/* 
+/*
  * Advertising PDU format:
  * -> 2 byte header
  *      -> LSB contains pdu type, txadd and rxadd bits.
  *      -> MSB contains length (6 bits). Length is length of payload. Does
- *         not include the header length itself. 
+ *         not include the header length itself.
  * -> Payload (max 37 bytes)
  */
 #define BLE_ADV_PDU_HDR_TYPE_MASK           (0x0F)
@@ -216,7 +265,7 @@ struct ble_dev_addr
 #define BLE_ADV_PDU_TYPE_CONNECT_REQ        (5)
 #define BLE_ADV_PDU_TYPE_ADV_SCAN_IND       (6)
 
-/* 
+/*
  * TxAdd and RxAdd bit definitions. A 0 is a public address; a 1 is a
  * random address.
  */
@@ -225,7 +274,7 @@ struct ble_dev_addr
 
 /*
  * Data Channel format
- * 
+ *
  *  -> Header (2 bytes)
  *      -> LSB contains llid, nesn, sn and md
  *      -> MSB contains length (8 bits)
@@ -237,6 +286,7 @@ struct ble_dev_addr
 #define BLE_LL_DATA_HDR_SN_MASK         (0x08)
 #define BLE_LL_DATA_HDR_MD_MASK         (0x10)
 #define BLE_LL_DATA_HDR_RSRVD_MASK      (0xE0)
+#define BLE_LL_DATA_PDU_MAX_PYLD        (251)
 #define BLE_LL_DATA_MIC_LEN             (4)
 
 /* LLID definitions */
@@ -260,7 +310,7 @@ struct ble_dev_addr
  *          -> Channel Map (5 bytes)
  *          -> Hop Increment (5 bits)
  *          -> SCA (3 bits)
- * 
+ *
  *  InitA is the initiators public (TxAdd=0) or random (TxAdd=1) address.
  *  AdvaA is the advertisers public (RxAdd=0) or random (RxAdd=1) address.
  *  LLData contains connection request data.
@@ -281,8 +331,7 @@ struct ble_dev_addr
 
 /*--- External API ---*/
 /* Initialize the Link Layer */
-int
-ble_ll_init(uint8_t ll_task_prio, uint8_t num_acl_pkts, uint16_t acl_pkt_size);
+void ble_ll_init(void);
 
 /* Reset the Link Layer */
 int ble_ll_reset(void);
@@ -294,25 +343,42 @@ int ble_ll_is_valid_random_addr(uint8_t *addr);
 uint16_t ble_ll_pdu_tx_time_get(uint16_t len);
 
 /* Is this address a resolvable private address? */
-int ble_ll_is_resolvable_priv_addr(uint8_t *addr);
+int ble_ll_is_rpa(uint8_t *addr, uint8_t addr_type);
 
 /* Is 'addr' our device address? 'addr_type' is public (0) or random (!=0) */
 int ble_ll_is_our_devaddr(uint8_t *addr, int addr_type);
 
 /**
- * Called to put a packet on the Link Layer transmit packet queue. 
- * 
+ * Called to put a packet on the Link Layer transmit packet queue.
+ *
  * @param txpdu Pointer to transmit packet
  */
 void ble_ll_acl_data_in(struct os_mbuf *txpkt);
 
+/**
+ * Allocate a pdu (chain) for reception.
+ *
+ * @param len Length of PDU. This includes the PDU header as well as payload.
+ * Does not include MIC if encrypted.
+ *
+ * @return struct os_mbuf* Pointer to mbuf chain to hold received packet
+ */
+struct os_mbuf *ble_ll_rxpdu_alloc(uint16_t len);
+
+/* Tell the Link Layer there has been a data buffer overflow */
+void ble_ll_data_buffer_overflow(void);
+
+/* Tell the link layer there has been a hardware error */
+void ble_ll_hw_error(void);
+
 /*--- PHY interfaces ---*/
+struct ble_mbuf_hdr;
+
 /* Called by the PHY when a packet has started */
-int ble_ll_rx_start(struct os_mbuf *rxpdu, uint8_t chan);
+int ble_ll_rx_start(uint8_t *rxbuf, uint8_t chan, struct ble_mbuf_hdr *hdr);
 
 /* Called by the PHY when a packet reception ends */
-struct ble_mbuf_hdr;
-int ble_ll_rx_end(struct os_mbuf *rxpdu, struct ble_mbuf_hdr *ble_hdr);
+int ble_ll_rx_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr);
 
 /*--- Controller API ---*/
 void ble_ll_mbuf_init(struct os_mbuf *m, uint8_t pdulen, uint8_t hdr);
@@ -326,6 +392,9 @@ uint8_t ble_ll_state_get(void);
 /* Send an event to LL task */
 void ble_ll_event_send(struct os_event *ev);
 
+/* Hand received pdu's to LL task  */
+void ble_ll_rx_pdu_in(struct os_mbuf *rxpdu);
+
 /* Set random address */
 int ble_ll_set_random_addr(uint8_t *addr);
 
@@ -335,30 +404,57 @@ void ble_ll_wfr_enable(uint32_t cputime);
 /* Disable wait for response timer */
 void ble_ll_wfr_disable(void);
 
+/* Wait for response timer expiration callback */
+void ble_ll_wfr_timer_exp(void *arg);
+
 /* Read set of features supported by the Link Layer */
 uint8_t ble_ll_read_supp_features(void);
 
-/* 
+/* Read set of states supported by the Link Layer */
+uint64_t ble_ll_read_supp_states(void);
+
+/* Check if octets and time are valid. Returns 0 if not valid */
+int ble_ll_chk_txrx_octets(uint16_t octets);
+int ble_ll_chk_txrx_time(uint16_t time);
+
+/* Random numbers */
+int ble_ll_rand_init(void);
+void ble_ll_rand_sample(uint8_t rnum);
+int ble_ll_rand_data_get(uint8_t *buf, uint8_t len);
+void ble_ll_rand_prand_get(uint8_t *prand);
+int ble_ll_rand_start(void);
+
+/*
  * XXX: temporary LL debug log. Will get removed once we transition to real
  * log
- */ 
+ */
 #undef BLE_LL_LOG
+#include "console/console.h"
 
 #define BLE_LL_LOG_ID_PHY_SETCHAN       (1)
 #define BLE_LL_LOG_ID_RX_START          (2)
 #define BLE_LL_LOG_ID_RX_END            (3)
 #define BLE_LL_LOG_ID_WFR_EXP           (4)
 #define BLE_LL_LOG_ID_PHY_TXEND         (5)
+#define BLE_LL_LOG_ID_PHY_TX            (6)
+#define BLE_LL_LOG_ID_PHY_RX            (7)
 #define BLE_LL_LOG_ID_PHY_DISABLE       (9)
 #define BLE_LL_LOG_ID_CONN_EV_START     (10)
 #define BLE_LL_LOG_ID_CONN_TX           (15)
 #define BLE_LL_LOG_ID_CONN_RX           (16)
 #define BLE_LL_LOG_ID_CONN_TX_RETRY     (17)
 #define BLE_LL_LOG_ID_CONN_RX_ACK       (18)
+#define BLE_LL_LOG_ID_LL_CTRL_RX        (19)
 #define BLE_LL_LOG_ID_CONN_EV_END       (20)
 #define BLE_LL_LOG_ID_CONN_END          (30)
 #define BLE_LL_LOG_ID_ADV_TXBEG         (50)
 #define BLE_LL_LOG_ID_ADV_TXDONE        (60)
+#define BLE_LL_LOG_ID_SCHED             (80)
+#define BLE_LL_LOG_ID_RFCLK_START       (90)
+#define BLE_LL_LOG_ID_RFCLK_ENABLE      (91)
+#define BLE_LL_LOG_ID_RFCLK_STOP        (95)
+#define BLE_LL_LOG_ID_RFCLK_SCHED_DIS   (96)
+#define BLE_LL_LOG_ID_RFCLK_SCAN_DIS    (97)
 
 #ifdef BLE_LL_LOG
 void ble_ll_log(uint8_t id, uint8_t arg8, uint16_t arg16, uint32_t arg32);
@@ -366,5 +462,19 @@ void ble_ll_log(uint8_t id, uint8_t arg8, uint16_t arg16, uint32_t arg32);
 #define ble_ll_log(m,n,o,p)
 #endif
 
+#if (MYNEWT_VAL(BLE_LL_CFG_FEAT_LE_ENCRYPTION) == 1)
+/* LTK 0x4C68384139F574D836BCF34E9DFB01BF */
+extern const uint8_t g_bletest_LTK[];
+extern uint16_t g_bletest_EDIV;
+extern uint64_t g_bletest_RAND;
+extern uint64_t g_bletest_SKDm;
+extern uint64_t g_bletest_SKDs;
+extern uint32_t g_bletest_IVm;
+extern uint32_t g_bletest_IVs;
+#endif
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* H_LL_ */

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -20,20 +20,12 @@
 #ifndef H_BLE_PHY_
 #define H_BLE_PHY_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Forward declarations */
 struct os_mbuf;
-
-/* 
- * XXX: Transceiver definitions. These dont belong here and will be moved
- * once we finalize transceiver specific support.
- */ 
-#define XCVR_RX_START_DELAY_USECS     (140)
-#define XCVR_TX_START_DELAY_USECS     (140)
-#define XCVR_PROC_DELAY_USECS         (50)
-#define XCVR_TX_SCHED_DELAY_USECS     \
-    (XCVR_TX_START_DELAY_USECS + XCVR_PROC_DELAY_USECS)
-#define XCVR_RX_SCHED_DELAY_USECS     \
-    (XCVR_RX_START_DELAY_USECS + XCVR_PROC_DELAY_USECS)
 
 /* Channel/Frequency defintions */
 #define BLE_PHY_NUM_CHANS           (40)
@@ -77,6 +69,8 @@ struct os_mbuf;
 #define BLE_PHY_ERR_INIT            (2)
 #define BLE_PHY_ERR_INV_PARAM       (3)
 #define BLE_PHY_ERR_NO_BUFS         (4)
+#define BLE_PHY_ERR_TX_LATE         (5)
+#define BLE_PHY_ERR_RX_LATE         (6)
 
 /* Maximun PDU length. Includes LL header of 2 bytes and 255 bytes payload. */
 #define BLE_PHY_MAX_PDU_LEN         (257)
@@ -93,14 +87,28 @@ int ble_phy_reset(void);
 /* Set the PHY channel */
 int ble_phy_setchan(uint8_t chan, uint32_t access_addr, uint32_t crcinit);
 
+#if MYNEWT_VAL(OS_CPUTIME_FREQ) == 32768
+/* Set transmit start time */
+int ble_phy_tx_set_start_time(uint32_t cputime, uint8_t rem_usecs);
+
+/* Set receive start time */
+int ble_phy_rx_set_start_time(uint32_t cputime, uint8_t rem_usecs);
+#else
+/* Set transmit start time */
+int ble_phy_tx_set_start_time(uint32_t cputime);
+#endif
+
 /* Set the transmit end callback and argument */
 void ble_phy_set_txend_cb(ble_phy_tx_end_func txend_cb, void *arg);
 
 /* Place the PHY into transmit mode */
-int ble_phy_tx(struct os_mbuf *txpdu, uint8_t beg_trans, uint8_t end_trans);
+int ble_phy_tx(struct os_mbuf *txpdu, uint8_t end_trans);
 
 /* Place the PHY into receive mode */
 int ble_phy_rx(void);
+
+/* Copies the received PHY buffer into the allocated pdu */
+void ble_phy_rxpdu_copy(uint8_t *dptr, struct os_mbuf *rxpdu);
 
 /* Get an RSSI reading */
 int ble_phy_rssi_get(void);
@@ -114,13 +122,65 @@ int ble_phy_txpwr_get(void);
 /* Disable the PHY */
 void ble_phy_disable(void);
 
+#if (MYNEWT_VAL(OS_CPUTIME_FREQ) == 32768)
+void ble_phy_stop_usec_timer(void);
+void ble_phy_wfr_enable(int txrx, uint32_t wfr_usecs);
+#define BLE_PHY_WFR_ENABLE_RX       (0)
+#define BLE_PHY_WFR_ENABLE_TXRX     (1)
+#else
+#define ble_phy_stop_usec_timer()
+#endif
+
+/* Starts rf clock */
+void ble_phy_rfclk_enable(void);
+
+/* Stops rf clock */
+void ble_phy_rfclk_disable(void);
+
+/*
+ * Used to restart reception on same channel after wfr timer expiration or
+ * frame received.
+ */
+void ble_phy_restart_rx(void);
+
 /* Gets the current state of the PHY */
 int ble_phy_state_get(void);
+
+/* Gets current state of transceiver */
+uint8_t ble_phy_xcvr_state_get(void);
 
 /* Returns 'true' if a reception has started */
 int ble_phy_rx_started(void);
 
+/*
+ * Returns the maximum supported tx/rx PDU payload size, in bytes, for data
+ * channel PDUs (this does not apply to advertising channel PDUs). Note
+ * that the data channel PDU is composed of a 2-byte header, the payload, and
+ * an optional MIC. The maximum payload is 251 bytes.
+ */
+uint8_t ble_phy_max_data_pdu_pyld(void);
+
 /* Gets the current access address */
 uint32_t ble_phy_access_addr_get(void);
+
+/* Enable encryption */
+void ble_phy_encrypt_enable(uint64_t pkt_counter, uint8_t *iv, uint8_t *key,
+                            uint8_t is_master);
+
+/* Disable encryption */
+void ble_phy_encrypt_disable(void);
+
+/* Set the packet counters and dir used by LE encyption */
+void ble_phy_encrypt_set_pkt_cntr(uint64_t pkt_counter, int dir);
+
+/* Enable phy resolving list */
+void ble_phy_resolv_list_enable(void);
+
+/* Disable phy resolving list */
+void ble_phy_resolv_list_disable(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* H_BLE_PHY_ */

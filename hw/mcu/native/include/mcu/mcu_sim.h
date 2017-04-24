@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,9 +19,20 @@
 #ifndef __MCU_SIM_H__
 #define __MCU_SIM_H__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define OS_TICKS_PER_SEC    (100)
+
 extern char *native_flash_file;
 extern char *native_uart_log_file;
+extern const char *native_uart_dev_strs[];
 
 void mcu_sim_parse_args(int argc, char **argv);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __MCU_SIM_H__ */

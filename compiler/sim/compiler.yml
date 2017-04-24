@@ -19,7 +19,8 @@
 
 # Default.
 compiler.path.cc: "gcc"
-compiler.path.as: "gcc -x assembler-with-cpp"
+compiler.path.cpp: "g++"
+compiler.path.as: "gcc"
 compiler.path.archive: "ar"
 compiler.path.objdump: "objdump"
 compiler.path.objsize: "size"
@@ -30,7 +31,10 @@ compiler.ld.resolve_circular_deps: true
 
 compiler.flags.default: [compiler.flags.base, -O1]
 compiler.flags.debug: [compiler.flags.base, -O0]
+compiler.as.flags: [-x, assembler-with-cpp]
 compiler.ld.mapfile: false
+compiler.ld.binfile: false
+compiler.ld.flags: -lm
 
 # Linux.
 compiler.flags.base.LINUX: >
@@ -38,10 +42,9 @@ compiler.flags.base.LINUX: >
 compiler.ld.flags.LINUX: -lutil
 
 # OS X.
-compiler.path.cc.DARWIN.OVERWRITE: "/usr/local/bin/gcc-5"
-compiler.path.as.DARWIN.OVERWRITE: "/usr/local/bin/gcc-5 -x assembler-with-cpp"
+compiler.path.cc.DARWIN.OVERWRITE: "gcc-5"
+compiler.path.as.DARWIN.OVERWRITE: "gcc-5"
 compiler.path.objdump.DARWIN.OVERWRITE: "gobjdump"
-compiler.path.objsize.DARWIN.OVERWRITE: "objsize"
 compiler.path.objcopy.DARWIN.OVERWRITE: "gobjcopy"
 compiler.flags.base.DARWIN: >
     -DMN_OSX

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -21,11 +21,12 @@
 #include "hal/hal_gpio.h"
 #include "bsp/cmsis_nvic.h"
 #include "bsp/bsp.h"
-#include "mcu/stm32f4xx.h"
-#include "mcu/stm32f4xx_hal_dma.h"
-#include "mcu/stm32f4xx_hal_uart.h"
-#include "mcu/stm32f4xx_hal_rcc.h"
+#include "stm32f4xx.h"
+#include "stm32f4xx_hal_dma.h"
+#include "stm32f4xx_hal_uart.h"
+#include "stm32f4xx_hal_rcc.h"
 #include "mcu/stm32f4_bsp.h"
+#include "mcu/stm32f4xx_mynewt_hal.h"
 #include <assert.h>
 #include <stdlib.h>
 
@@ -39,6 +40,7 @@ struct hal_uart {
     hal_uart_tx_char u_tx_func;
     hal_uart_tx_done u_tx_done;
     void *u_func_arg;
+    const struct stm32f4_uart_cfg *u_cfg;
 };
 static struct hal_uart uarts[UART_CNT];
 
@@ -72,6 +74,7 @@ uart_irq_handler(int num)
     struct hal_uart *u;
     USART_TypeDef *regs;
     uint32_t isr;
+    uint32_t cr1;
     int data;
     int rc;
 
@@ -90,22 +93,26 @@ uart_irq_handler(int num)
             u->u_rx_stall = 1;
         }
     }
-    if (isr & USART_SR_TXE) {
-        data = u->u_tx_func(u->u_func_arg);
-        if (data < 0) {
-            regs->CR1 &= ~USART_CR1_TXEIE;
-            regs->CR1 |= USART_CR1_TCIE;
-            u->u_tx_end = 1;
-        } else {
-            regs->DR = data;
+    if (isr & (USART_SR_TXE | USART_SR_TC)) {
+        cr1 = regs->CR1;
+        if (isr & USART_SR_TXE) {
+            data = u->u_tx_func(u->u_func_arg);
+            if (data < 0) {
+                cr1 &= ~USART_CR1_TXEIE;
+                cr1 |= USART_CR1_TCIE;
+                u->u_tx_end = 1;
+            } else {
+                regs->DR = data;
+            }
         }
-    }
-    if (u->u_tx_end == 1 && isr & USART_SR_TC) {
-        if (u->u_tx_done) {
-            u->u_tx_done(u->u_func_arg);
+        if (u->u_tx_end == 1 && isr & USART_SR_TC) {
+            if (u->u_tx_done) {
+                u->u_tx_done(u->u_func_arg);
+            }
+            u->u_tx_end = 0;
+            cr1 &= ~USART_CR1_TCIE;
         }
-        u->u_tx_end = 0;
-        regs->CR1 &= ~USART_CR1_TCIE;
+        regs->CR1 = cr1;
     }
 }
 
@@ -177,6 +184,7 @@ uart_irq2(void)
 
 }
 
+#if !defined(STM32F401xE)
 static void
 uart_irq3(void)
 {
@@ -194,6 +202,7 @@ uart_irq5(void)
 {
     uart_irq_handler(4);
 }
+#endif
 
 static void
 uart_irq6(void)
@@ -216,6 +225,7 @@ hal_uart_set_nvic(IRQn_Type irqn, struct hal_uart *uart)
         isr = (uint32_t)&uart_irq2;
         ui = &uart_irqs[1];
         break;
+#if !defined(STM32F401xE)
     case USART3_IRQn:
         isr = (uint32_t)&uart_irq3;
         ui = &uart_irqs[2];
@@ -228,6 +238,7 @@ hal_uart_set_nvic(IRQn_Type irqn, struct hal_uart *uart)
         isr = (uint32_t)&uart_irq5;
         ui = &uart_irqs[4];
         break;
+#endif
     case USART6_IRQn:
         isr = (uint32_t)&uart_irq6;
         ui = &uart_irqs[5];
@@ -265,7 +276,7 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
     if (u->u_open) {
         return -1;
     }
-    cfg = bsp_uart_config(port);
+    cfg = u->u_cfg;
     assert(cfg);
 
     /*
@@ -340,11 +351,11 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
 
     *cfg->suc_rcc_reg |= cfg->suc_rcc_dev;
 
-    hal_gpio_init_af(cfg->suc_pin_tx, cfg->suc_pin_af, 0);
-    hal_gpio_init_af(cfg->suc_pin_rx, cfg->suc_pin_af, 0);
+    hal_gpio_init_af(cfg->suc_pin_tx, cfg->suc_pin_af, 0, 0);
+    hal_gpio_init_af(cfg->suc_pin_rx, cfg->suc_pin_af, 0, 0);
     if (flow_ctl == HAL_UART_FLOW_CTL_RTS_CTS) {
-        hal_gpio_init_af(cfg->suc_pin_rts, cfg->suc_pin_af, 0);
-        hal_gpio_init_af(cfg->suc_pin_cts, cfg->suc_pin_af, 0);
+        hal_gpio_init_af(cfg->suc_pin_rts, cfg->suc_pin_af, 0, 0);
+        hal_gpio_init_af(cfg->suc_pin_cts, cfg->suc_pin_af, 0, 0);
     }
 
     u->u_regs = cfg->suc_uart;
@@ -363,6 +374,36 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
 
     u->u_regs->CR1 |= (USART_CR1_RXNEIE | USART_CR1_UE);
     u->u_open = 1;
+
+    return 0;
+}
+
+int
+hal_uart_init(int port, void *arg)
+{
+    struct hal_uart *u;
+
+    if (port >= UART_CNT) {
+        return -1;
+    }
+    u = &uarts[port];
+    u->u_cfg = (const struct stm32f4_uart_cfg *)arg;
+
+    return 0;
+}
+
+int
+hal_uart_close(int port)
+{
+    struct hal_uart *u;
+
+    if (port >= UART_CNT) {
+        return -1;
+    }
+    u = &uarts[port];
+
+    u->u_open = 0;
+    u->u_regs->CR1 = 0;
 
     return 0;
 }

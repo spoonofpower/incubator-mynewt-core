@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -17,98 +17,91 @@
  * under the License.
  */
 
-#ifdef NEWTMGR_PRESENT
+#include "syscfg/syscfg.h"
+
+#if MYNEWT_VAL(CONFIG_NEWTMGR)
 
 #include <string.h>
 
-#include <newtmgr/newtmgr.h>
-#include <json/json.h>
-
+#include "mgmt/mgmt.h"
+#include "cborattr/cborattr.h"
 #include "config/config.h"
 #include "config_priv.h"
 
-static int conf_nmgr_read(struct nmgr_jbuf *);
-static int conf_nmgr_write(struct nmgr_jbuf *);
+static int conf_nmgr_read(struct mgmt_cbuf *);
+static int conf_nmgr_write(struct mgmt_cbuf *);
 
-static const struct nmgr_handler conf_nmgr_handlers[] = {
+static const struct mgmt_handler conf_nmgr_handlers[] = {
     [CONF_NMGR_OP] = { conf_nmgr_read, conf_nmgr_write}
 };
 
-static struct nmgr_group conf_nmgr_group = {
-    .ng_handlers = (struct nmgr_handler *)conf_nmgr_handlers,
-    .ng_handlers_count = 1,
-    .ng_group_id = NMGR_GROUP_ID_CONFIG
+static struct mgmt_group conf_nmgr_group = {
+    .mg_handlers = (struct mgmt_handler *)conf_nmgr_handlers,
+    .mg_handlers_count = 1,
+    .mg_group_id = MGMT_GROUP_ID_CONFIG
 };
 
 static int
-conf_nmgr_read(struct nmgr_jbuf *njb)
+conf_nmgr_read(struct mgmt_cbuf *cb)
 {
-    char tmp_str[max(CONF_MAX_DIR_DEPTH * 8, 16)];
-    char *val_str;
-    const struct json_attr_t attr[2] = {
-        [0] = {
-            .attribute = "name",
-            .type = t_string,
-            .addr.string = tmp_str,
-            .len = sizeof(tmp_str)
-        },
-        [1] = {
-            .attribute = NULL
-        }
-    };
-    struct json_value jv;
     int rc;
+    char name_str[CONF_MAX_NAME_LEN];
+    char val_str[CONF_MAX_VAL_LEN];
+    char *val;
+    CborError g_err = CborNoError;
 
-    rc = json_read_object(&njb->njb_buf, attr);
-    if (rc) {
-        return OS_EINVAL;
-    }
-
-    val_str = conf_get_value(tmp_str, tmp_str, sizeof(tmp_str));
-    if (!val_str) {
-        return OS_EINVAL;
-    }
-
-    json_encode_object_start(&njb->njb_enc);
-    JSON_VALUE_STRING(&jv, val_str);
-    json_encode_object_entry(&njb->njb_enc, "val", &jv);
-    json_encode_object_finish(&njb->njb_enc);
-
-    return 0;
-}
-
-static int
-conf_nmgr_write(struct nmgr_jbuf *njb)
-{
-    char name_str[CONF_MAX_DIR_DEPTH * 8];
-    char val_str[256];
-    struct json_attr_t attr[3] = {
+    const struct cbor_attr_t attr[2] = {
         [0] = {
             .attribute = "name",
-            .type = t_string,
+            .type = CborAttrTextStringType,
             .addr.string = name_str,
             .len = sizeof(name_str)
         },
         [1] = {
-            .attribute = "val",
-            .type = t_string,
-            .addr.string = val_str,
-            .len = sizeof(val_str)
-        },
-        [2] = {
             .attribute = NULL
         }
     };
-    int rc;
 
-    rc = json_read_object(&njb->njb_buf, attr);
+    rc = cbor_read_object(&cb->it, attr);
     if (rc) {
-        return OS_EINVAL;
+        return MGMT_ERR_EINVAL;
+    }
+
+    val = conf_get_value(name_str, val_str, sizeof(val_str));
+    if (!val) {
+        return MGMT_ERR_EINVAL;
+    }
+
+    g_err |= cbor_encode_text_stringz(&cb->encoder, "val");
+    g_err |= cbor_encode_text_stringz(&cb->encoder, val);
+
+    if (g_err) {
+        return MGMT_ERR_ENOMEM;
+    }
+    return 0;
+}
+
+static int
+conf_nmgr_write(struct mgmt_cbuf *cb)
+{
+    int rc;
+    char name_str[CONF_MAX_NAME_LEN];
+    char val_str[CONF_MAX_VAL_LEN];
+
+    rc = conf_cbor_line(cb, name_str, sizeof(name_str), val_str,
+      sizeof(val_str));
+    if (rc) {
+        return MGMT_ERR_EINVAL;
     }
 
     rc = conf_set_value(name_str, val_str);
     if (rc) {
-        return OS_EINVAL;
+        return MGMT_ERR_EINVAL;
+    }
+
+    rc = conf_commit(NULL);
+    if (rc) {
+        return MGMT_ERR_EINVAL;
     }
     return 0;
 }
@@ -116,6 +109,6 @@ conf_nmgr_write(struct nmgr_jbuf *njb)
 int
 conf_nmgr_register(void)
 {
-    return nmgr_group_register(&conf_nmgr_group);
+    return mgmt_group_register(&conf_nmgr_group);
 }
 #endif

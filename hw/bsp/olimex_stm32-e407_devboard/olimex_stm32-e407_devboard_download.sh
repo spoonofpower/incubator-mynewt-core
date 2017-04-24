@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -16,41 +16,26 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-# Called: $0 <bsp_directory_path> <binary> [features...]
-#  - bsp_directory_path is absolute path to hw/bsp/bsp_name
-#  - binary is the path to prefix to target binary, .elf.bin appended to this
-#    name is the raw binary format of the binary.
-#  - features are the target features. So you can have e.g. different
-#    flash offset for bootloader 'feature'
-# 
-#
-if [ $# -lt 2 ]; then
-    echo "Need binary to download"
-    exit 1
-fi
 
-MYPATH=$1
-BASENAME=$2
-IS_BOOTLOADER=0
+#  - CORE_PATH is absolute path to @apache-mynewt-core
+#  - BSP_PATH is absolute path to hw/bsp/bsp_name
+#  - BIN_BASENAME is the path to prefix to target binary,
+#    .elf appended to name is the ELF file
+#  - IMAGE_SLOT is the image slot to download to (for non-mfg-image, non-boot)
+#  - FEATURES holds the target features string
+#  - EXTRA_JTAG_CMD holds extra parameters to pass to jtag software
+#  - MFG_IMAGE is "1" if this is a manufacturing image
+#  - FLASH_OFFSET contains the flash offset to download to
+#  - BOOT_LOADER is set if downloading a bootloader
 
-# Look for 'bootloader' from 3rd arg onwards
-shift
-shift
-while [ $# -gt 0 ]; do
-    if [ $1 = "bootloader" ]; then
-	IS_BOOTLOADER=1
-    fi
-    shift
-done
+. $CORE_PATH/hw/scripts/openocd.sh
 
-if [ $IS_BOOTLOADER -eq 1 ]; then
+CFG="-f interface/ftdi/olimex-arm-usb-tiny-h.cfg -s $BSP_PATH -f f407.cfg"
+
+if [ "$MFG_IMAGE" ]; then
     FLASH_OFFSET=0x08000000
-    FILE_NAME=$BASENAME.elf.bin
-else
-    FLASH_OFFSET=0x08020000
-    FILE_NAME=$BASENAME.img
 fi
-echo "Downloading" $FILE_NAME "to" $FLASH_OFFSET
 
-openocd -f interface/ftdi/olimex-arm-usb-tiny-h.cfg -s $MYPATH -f f407.cfg -c init -c "reset halt" -c "flash write_image erase $FILE_NAME $FLASH_OFFSET" -c "reset run" -c shutdown
-
+common_file_to_load
+openocd_load
+openocd_reset_run

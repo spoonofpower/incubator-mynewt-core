@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,7 +17,9 @@
  * under the License.
  */
 
-#ifdef SHELL_PRESENT
+#include "syscfg/syscfg.h"
+
+#if MYNEWT_VAL(FS_CLI)
 
 #include <inttypes.h>
 #include <string.h>
@@ -31,6 +33,7 @@ static int fs_ls_cmd(int argc, char **argv);
 static int fs_rm_cmd(int argc, char **argv);
 static int fs_mkdir_cmd(int argc, char **argv);
 static int fs_mv_cmd(int argc, char **argv);
+static int fs_cat_cmd(int argc, char **argv);
 
 static struct shell_cmd fs_ls_struct = {
     .sc_cmd = "ls",
@@ -47,6 +50,10 @@ static struct shell_cmd fs_mkdir_struct = {
 static struct shell_cmd fs_mv_struct = {
     .sc_cmd = "mv",
     .sc_cmd_func = fs_mv_cmd
+};
+static struct shell_cmd fs_cat_struct = {
+    .sc_cmd = "cat",
+    .sc_cmd_func = fs_cat_cmd
 };
 
 static void
@@ -180,6 +187,39 @@ out:
     return 0;
 }
 
+static int
+fs_cat_cmd(int argc, char **argv)
+{
+    int rc;
+    struct fs_file *file;
+    char buf[32];
+    uint32_t len;
+
+    if (argc != 2) {
+        console_printf("cat <filename>\n");
+        return -1;
+    }
+
+    rc = fs_open(argv[1], FS_ACCESS_READ, &file);
+    if (rc != FS_EOK) {
+        console_printf("Error opening %s - %d\n", argv[1], rc);
+        return -1;
+    }
+
+    do {
+        rc = fs_read(file, sizeof(buf), buf, &len);
+        if (rc != FS_EOK) {
+            console_printf("\nError reading %s - %d\n", argv[1], rc);
+            break;
+        }
+        console_write(buf, len);
+    } while (len > 0);
+
+    fs_close(file);
+
+    return 0;
+}
+
 void
 fs_cli_init(void)
 {
@@ -187,5 +227,6 @@ fs_cli_init(void)
     shell_cmd_register(&fs_rm_struct);
     shell_cmd_register(&fs_mkdir_struct);
     shell_cmd_register(&fs_mv_struct);
+    shell_cmd_register(&fs_cat_struct);
 }
-#endif /* SHELL_PRESENT */
+#endif /* MYNEWT_VAL(FS_CLI) */

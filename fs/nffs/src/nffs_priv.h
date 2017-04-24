@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -26,6 +26,12 @@
 #include "os/os_mempool.h"
 #include "nffs/nffs.h"
 #include "fs/fs.h"
+#include "crc/crc16.h"
+#include "stats/stats.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define NFFS_HASH_SIZE               256
 
@@ -38,6 +44,7 @@
 
 #define NFFS_ID_ROOT_DIR             0
 #define NFFS_ID_NONE                 0xffffffff
+#define NFFS_HASH_ENTRY_NONE         0xffffffff
 
 #define NFFS_AREA_MAGIC0             0xb98a31e2
 #define NFFS_AREA_MAGIC1             0x7fb0428c
@@ -47,12 +54,17 @@
 #define NFFS_INODE_MAGIC             0x925f8bc0
 
 #define NFFS_AREA_ID_NONE            0xff
-#define NFFS_AREA_VER                0
+#define NFFS_AREA_VER_0                 0
+#define NFFS_AREA_VER_1              1
+#define NFFS_AREA_VER                NFFS_AREA_VER_1
 #define NFFS_AREA_OFFSET_ID          23
 
 #define NFFS_SHORT_FILENAME_LEN      3
 
 #define NFFS_BLOCK_MAX_DATA_SZ_MAX   2048
+
+#define NFFS_DETECT_FAIL_IGNORE     1
+#define NFFS_DETECT_FAIL_FORMAT     2
 
 /** On-disk representation of an area header. */
 struct nffs_disk_area {
@@ -66,12 +78,13 @@ struct nffs_disk_area {
 
 /** On-disk representation of an inode (file or directory). */
 struct nffs_disk_inode {
-    uint32_t ndi_magic;         /* NFFS_INODE_MAGIC */
     uint32_t ndi_id;            /* Unique object ID. */
-    uint32_t ndi_seq;           /* Sequence number; greater supersedes
-                                   lesser. */
     uint32_t ndi_parent_id;     /* Object ID of parent directory inode. */
-    uint8_t reserved8;
+    uint32_t ndi_lastblock_id;     /* Object ID of parent directory inode. */
+    uint16_t ndi_seq;           /* Sequence number; greater supersedes
+                                   lesser. */
+    uint16_t reserved16;
+    uint8_t ndi_flags;            /* flags */
     uint8_t ndi_filename_len;   /* Length of filename, in bytes. */
     uint16_t ndi_crc16;         /* Covers rest of header and filename. */
     /* Followed by filename. */
@@ -81,18 +94,18 @@ struct nffs_disk_inode {
 
 /** On-disk representation of a data block. */
 struct nffs_disk_block {
-    uint32_t ndb_magic;     /* NFFS_BLOCK_MAGIC */
     uint32_t ndb_id;        /* Unique object ID. */
-    uint32_t ndb_seq;       /* Sequence number; greater supersedes lesser. */
     uint32_t ndb_inode_id;  /* Object ID of owning inode. */
     uint32_t ndb_prev_id;   /* Object ID of previous block in file;
                                NFFS_ID_NONE if this is the first block. */
+    uint16_t ndb_seq;       /* Sequence number; greater supersedes lesser. */
+    uint16_t reserved16;
     uint16_t ndb_data_len;  /* Length of data contents, in bytes. */
     uint16_t ndb_crc16;     /* Covers rest of header and data. */
     /* Followed by 'ndb_data_len' bytes of data. */
 };
 
-#define NFFS_DISK_BLOCK_OFFSET_CRC  20
+#define NFFS_DISK_BLOCK_OFFSET_CRC  18
 
 /**
  * What gets stored in the hash table.  Each entry represents a data block or
@@ -115,9 +128,26 @@ struct nffs_inode_entry {
     union {
         struct nffs_inode_list nie_child_list;           /* If directory */
         struct nffs_hash_entry *nie_last_block_entry;    /* If file */
+        uint32_t nie_lastblock_id;
     };
     uint8_t nie_refcnt;
+    uint8_t nie_flags;
+    uint8_t nie_blkcnt;
+    uint8_t reserved8;
 };
+
+#define    NFFS_INODE_FLAG_FREE        0x00
+#define    NFFS_INODE_FLAG_DUMMY       0x01    /* inode is a dummy */
+#define    NFFS_INODE_FLAG_DUMMYPARENT 0x02    /* parent not in cache */
+#define    NFFS_INODE_FLAG_DUMMYLSTBLK 0x04    /* lastblock not in cache */
+#define    NFFS_INODE_FLAG_DUMMYINOBLK 0x08    /* dummy inode for blk */
+#define    NFFS_INODE_FLAG_OBSOLETE    0x10    /* always replace if same ID */
+#define    NFFS_INODE_FLAG_INTREE      0x20    /* in directory structure */
+#define    NFFS_INODE_FLAG_INHASH      0x40    /* in hash table */
+#define    NFFS_INODE_FLAG_DELETED     0x80    /* inode deleted */
+
+#define nie_id            nie_hash_entry.nhe_id
+#define nie_flash_loc    nie_hash_entry.nhe_flash_loc
 
 /** Full inode representation; not stored permanently RAM. */
 struct nffs_inode {
@@ -141,6 +171,7 @@ struct nffs_block {
 };
 
 struct nffs_file {
+    struct fs_ops *fops;
     struct nffs_inode_entry *nf_inode_entry;
     uint32_t nf_offset;
     uint8_t nf_access_flags;
@@ -153,6 +184,7 @@ struct nffs_area {
     uint16_t na_id;
     uint8_t na_gc_seq;
     uint8_t na_flash_id;
+    uint32_t na_obsolete;   /* deleted bytecount */
 };
 
 struct nffs_disk_object {
@@ -162,8 +194,11 @@ struct nffs_disk_object {
     union {
         struct nffs_disk_inode ndo_disk_inode;
         struct nffs_disk_block ndo_disk_block;
-    };
+    } ndo_un_obj;
 };
+
+#define ndo_disk_inode    ndo_un_obj.ndo_disk_inode
+#define ndo_disk_block    ndo_un_obj.ndo_disk_block
 
 struct nffs_seek_info {
     struct nffs_block nsi_last_block;
@@ -204,13 +239,38 @@ struct nffs_cache_inode {
 };
 
 struct nffs_dirent {
+    struct fs_ops *fops;
     struct nffs_inode_entry *nde_inode_entry;
 };
 
 struct nffs_dir {
+    struct fs_ops *fops;
     struct nffs_inode_entry *nd_parent_inode_entry;
     struct nffs_dirent nd_dirent;
 };
+
+STATS_SECT_START(nffs_stats)
+    STATS_SECT_ENTRY(nffs_hashcnt_ins)
+    STATS_SECT_ENTRY(nffs_hashcnt_rm)
+    STATS_SECT_ENTRY(nffs_object_count)
+    STATS_SECT_ENTRY(nffs_iocnt_read)
+    STATS_SECT_ENTRY(nffs_iocnt_write)
+    STATS_SECT_ENTRY(nffs_gccnt)
+    STATS_SECT_ENTRY(nffs_readcnt_data)
+    STATS_SECT_ENTRY(nffs_readcnt_block)
+    STATS_SECT_ENTRY(nffs_readcnt_crc)
+    STATS_SECT_ENTRY(nffs_readcnt_copy)
+    STATS_SECT_ENTRY(nffs_readcnt_format)
+    STATS_SECT_ENTRY(nffs_readcnt_gccollate)
+    STATS_SECT_ENTRY(nffs_readcnt_inode)
+    STATS_SECT_ENTRY(nffs_readcnt_inodeent)
+    STATS_SECT_ENTRY(nffs_readcnt_rename)
+    STATS_SECT_ENTRY(nffs_readcnt_update)
+    STATS_SECT_ENTRY(nffs_readcnt_filename)
+    STATS_SECT_ENTRY(nffs_readcnt_object)
+    STATS_SECT_ENTRY(nffs_readcnt_detect)
+STATS_SECT_END
+extern STATS_SECT_DECL(nffs_stats) nffs_stats;
 
 extern void *nffs_file_mem;
 extern void *nffs_block_entry_mem;
@@ -231,6 +291,8 @@ extern struct nffs_area *nffs_areas;
 extern uint8_t nffs_num_areas;
 extern uint8_t nffs_scratch_area_idx;
 extern uint16_t nffs_block_max_data_sz;
+extern unsigned int nffs_gc_count;
+extern struct nffs_area_desc *nffs_current_area_descs;
 
 #define NFFS_FLASH_BUF_SZ        256
 extern uint8_t nffs_flash_buf[NFFS_FLASH_BUF_SZ];
@@ -244,6 +306,7 @@ extern struct log nffs_log;
 /* @area */
 int nffs_area_magic_is_set(const struct nffs_disk_area *disk_area);
 int nffs_area_is_scratch(const struct nffs_disk_area *disk_area);
+int nffs_area_is_current_version(const struct nffs_disk_area *disk_area);
 void nffs_area_to_disk(const struct nffs_area *area,
                        struct nffs_disk_area *out_disk_area);
 uint32_t nffs_area_free_space(const struct nffs_area *area);
@@ -253,6 +316,7 @@ int nffs_area_find_corrupt_scratch(uint16_t *out_good_idx,
 /* @block */
 struct nffs_hash_entry *nffs_block_entry_alloc(void);
 void nffs_block_entry_free(struct nffs_hash_entry *entry);
+int nffs_block_entry_reserve(struct nffs_hash_entry **out_block_entry);
 int nffs_block_read_disk(uint8_t area_idx, uint32_t area_offset,
                          struct nffs_disk_block *out_disk_block);
 int nffs_block_write_disk(const struct nffs_disk_block *disk_block,
@@ -273,11 +337,13 @@ int nffs_block_from_hash_entry(struct nffs_block *out_block,
                                struct nffs_hash_entry *entry);
 int nffs_block_read_data(const struct nffs_block *block, uint16_t offset,
                          uint16_t length, void *dst);
+int nffs_block_is_dummy(struct nffs_hash_entry *entry);
 
 /* @cache */
 void nffs_cache_inode_delete(const struct nffs_inode_entry *inode_entry);
 int nffs_cache_inode_ensure(struct nffs_cache_inode **out_entry,
                             struct nffs_inode_entry *inode_entry);
+int nffs_cache_inode_refresh(void);
 void nffs_cache_inode_range(const struct nffs_cache_inode *cache_inode,
                             uint32_t *out_start, uint32_t *out_end);
 int nffs_cache_seek(struct nffs_cache_inode *cache_inode, uint32_t to,
@@ -349,10 +415,13 @@ struct nffs_hash_entry *nffs_hash_find_block(uint32_t id);
 void nffs_hash_insert(struct nffs_hash_entry *entry);
 void nffs_hash_remove(struct nffs_hash_entry *entry);
 int nffs_hash_init(void);
+int nffs_hash_entry_is_dummy(struct nffs_hash_entry *he);
+int nffs_hash_id_is_dummy(uint32_t id);
 
 /* @inode */
 struct nffs_inode_entry *nffs_inode_entry_alloc(void);
 void nffs_inode_entry_free(struct nffs_inode_entry *inode_entry);
+int nffs_inode_entry_reserve(struct nffs_inode_entry **out_inode_entry);
 int nffs_inode_calc_data_length(struct nffs_inode_entry *inode_entry,
                                 uint32_t *out_len);
 int nffs_inode_data_len(struct nffs_inode_entry *inode_entry,
@@ -365,6 +434,7 @@ int nffs_inode_entry_from_disk(struct nffs_inode_entry *out_inode,
 int nffs_inode_rename(struct nffs_inode_entry *inode_entry,
                       struct nffs_inode_entry *new_parent,
                       const char *new_filename);
+int nffs_inode_update(struct nffs_inode_entry *inode_entry);
 void nffs_inode_insert_block(struct nffs_inode *inode,
                              struct nffs_block *block);
 int nffs_inode_read_disk(uint8_t area_idx, uint32_t offset,
@@ -372,6 +442,7 @@ int nffs_inode_read_disk(uint8_t area_idx, uint32_t offset,
 int nffs_inode_write_disk(const struct nffs_disk_inode *disk_inode,
                           const char *filename, uint8_t area_idx,
                           uint32_t offset);
+int nffs_inode_inc_refcnt(struct nffs_inode_entry *inode_entry);
 int nffs_inode_dec_refcnt(struct nffs_inode_entry *inode_entry);
 int nffs_inode_add_child(struct nffs_inode_entry *parent,
                          struct nffs_inode_entry *child);
@@ -397,8 +468,14 @@ int nffs_inode_unlink_from_ram(struct nffs_inode *inode,
 int nffs_inode_unlink_from_ram_corrupt_ok(struct nffs_inode *inode,
                                           struct nffs_hash_entry **out_next);
 int nffs_inode_unlink(struct nffs_inode *inode);
+int nffs_inode_is_dummy(struct nffs_inode_entry *inode_entry);
+int nffs_inode_is_deleted(struct nffs_inode_entry *inode_entry);
+int nffs_inode_setflags(struct nffs_inode_entry *entry, uint8_t flag);
+int nffs_inode_unsetflags(struct nffs_inode_entry *entry, uint8_t flag);
+int nffs_inode_getflags(struct nffs_inode_entry *entry, uint8_t flag);
 
 /* @misc */
+int nffs_misc_gc_if_oom(void *resource, int *out_rc);
 int nffs_misc_reserve_space(uint16_t space,
                             uint8_t *out_area_idx, uint32_t *out_area_offset);
 int nffs_misc_set_num_areas(uint8_t num_areas);
@@ -429,13 +506,30 @@ int nffs_restore_full(const struct nffs_area_desc *area_descs);
 int nffs_write_to_file(struct nffs_file *file, const void *data, int len);
 
 
-#define NFFS_HASH_FOREACH(entry, i)                                      \
-    for ((i) = 0; (i) < NFFS_HASH_SIZE; (i)++)                 \
-        SLIST_FOREACH((entry), &nffs_hash[i], nhe_next)
+#define NFFS_HASH_FOREACH(entry, i, next)                               \
+    for ((i) = 0; (i) < NFFS_HASH_SIZE; (i)++)                          \
+        for ((entry) = SLIST_FIRST(nffs_hash + (i));                    \
+             (entry) && (((next)) = SLIST_NEXT((entry), nhe_next), 1);  \
+             (entry) = ((next)))
 
 #define NFFS_FLASH_LOC_NONE  nffs_flash_loc(NFFS_AREA_ID_NONE, 0)
 
+#if 0
+#ifdef ARCH_sim
+#include <stdio.h>
+#define NFFS_LOG(lvl, ...) \
+    printf(__VA_ARGS__)
+#else
 #define NFFS_LOG(lvl, ...) \
     LOG_ ## lvl(&nffs_log, LOG_MODULE_NFFS, __VA_ARGS__)
+#endif
+#endif /* 0 */
+
+#define NFFS_LOG(lvl, ...) \
+    LOG_ ## lvl(&nffs_log, LOG_MODULE_NFFS, __VA_ARGS__)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

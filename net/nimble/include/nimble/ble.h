@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -20,23 +20,37 @@
 #ifndef H_BLE_
 #define H_BLE_
 
+#include <inttypes.h>
+#include <string.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* XXX: some or all of these should not be here */
 #include "os/os.h"
+#include "syscfg/syscfg.h"
 
-/* Shared command pool for transort between host and controller */
-extern struct os_mempool g_hci_cmd_pool;
-extern struct os_mempool g_hci_os_event_pool;
+/* BLE encryption block definitions */
+#define BLE_ENC_BLOCK_SIZE       (16)
+
+struct ble_encryption_block
+{
+    uint8_t     key[BLE_ENC_BLOCK_SIZE];
+    uint8_t     plain_text[BLE_ENC_BLOCK_SIZE];
+    uint8_t     cipher_text[BLE_ENC_BLOCK_SIZE];
+};
 
 /*
  * BLE MBUF structure:
- * 
+ *
  * The BLE mbuf structure is as follows. Note that this structure applies to
  * the packet header mbuf (not mbufs that are part of a "packet chain"):
  *      struct os_mbuf          (16)
  *      struct os_mbuf_pkthdr   (8)
  *      struct ble_mbuf_hdr     (8)
- *      Data buffer             (BLE_MBUF_PAYLOAD_SIZE)
- * 
+ *      Data buffer             (payload size, in bytes)
+ *
  * The BLE mbuf header contains the following:
  *  flags: bitfield with the following values
  *      0x01:   Set if there was a match on the whitelist
@@ -51,9 +65,22 @@ struct ble_mbuf_hdr_rxinfo
     uint8_t flags;
     uint8_t channel;
     uint8_t handle;
-    int8_t rssi;
+    int8_t  rssi;
+#if MYNEWT_VAL(BLE_MULTI_ADV_SUPPORT)
+    void *advsm;   /* advertising state machine */
+#endif
 };
 
+/* Flag definitions for rxinfo  */
+#define BLE_MBUF_HDR_F_CRC_OK           (0x80)
+#define BLE_MBUF_HDR_F_DEVMATCH         (0x40)
+#define BLE_MBUF_HDR_F_MIC_FAILURE      (0x20)
+#define BLE_MBUF_HDR_F_SCAN_RSP_TXD     (0x10)
+#define BLE_MBUF_HDR_F_SCAN_RSP_CHK     (0x08)
+#define BLE_MBUF_HDR_F_RESOLVED         (0x04)
+#define BLE_MBUF_HDR_F_RXSTATE_MASK     (0x03)
+
+/* Transmit info. NOTE: no flags defined */
 struct ble_mbuf_hdr_txinfo
 {
     uint8_t flags;
@@ -68,60 +95,38 @@ struct ble_mbuf_hdr
         struct ble_mbuf_hdr_rxinfo rxinfo;
         struct ble_mbuf_hdr_txinfo txinfo;
     };
-    uint32_t end_cputime;
+    uint32_t beg_cputime;
+#if (MYNEWT_VAL(OS_CPUTIME_FREQ) == 32768)
+    uint32_t rem_usecs;
+#endif
 };
 
-/* 
- * The payload size for BLE MBUFs. NOTE: this needs to accommodate a max size
- * PHY pdu of 257 bytes.
- */
-#define BLE_MBUF_PAYLOAD_SIZE           (260)
-
-/* Flag definitions for rxinfo  */
-#define BLE_MBUF_HDR_F_CRC_OK           (0x80)
-#define BLE_MBUF_HDR_F_DEVMATCH         (0x40)
-#define BLE_MBUF_HDR_F_CONN_REQ_TXD     (0x20)
-#define BLE_MBUF_HDR_F_SCAN_RSP_TXD     (0x10)
-#define BLE_MBUF_HDR_F_SCAN_RSP_CHK     (0x08)
-#define BLE_MBUF_HDR_F_RXSTATE_MASK     (0x07)      
-
-/* Flag definitions for txinfo */
-#define BLE_MBUF_HDR_F_TXD              (0x01)
-
-#define BLE_MBUF_HDR_CRC_OK(hdr)    \
+#define BLE_MBUF_HDR_CRC_OK(hdr)        \
     ((hdr)->rxinfo.flags & BLE_MBUF_HDR_F_CRC_OK)
 
-#define BLE_MBUF_HDR_RX_STATE(hdr)  \
+#define BLE_MBUF_HDR_MIC_FAILURE(hdr)   \
+    ((hdr)->rxinfo.flags & BLE_MBUF_HDR_F_MIC_FAILURE)
+
+#define BLE_MBUF_HDR_RESOLVED(hdr)      \
+    ((hdr)->rxinfo.flags & BLE_MBUF_HDR_F_RESOLVED)
+
+#define BLE_MBUF_HDR_RX_STATE(hdr)      \
     ((hdr)->rxinfo.flags & BLE_MBUF_HDR_F_RXSTATE_MASK)
 
-#define BLE_MBUF_HDR_PTR(om)        \
+#define BLE_MBUF_HDR_PTR(om)            \
     (struct ble_mbuf_hdr *)((uint8_t *)om + sizeof(struct os_mbuf) + \
                             sizeof(struct os_mbuf_pkthdr))
 
 /* BLE mbuf overhead per packet header mbuf */
-#define BLE_MBUF_PKTHDR_OVERHEAD    \
+#define BLE_MBUF_PKTHDR_OVERHEAD        \
     (sizeof(struct os_mbuf_pkthdr) + sizeof(struct ble_mbuf_hdr))
 
-#define BLE_MBUF_MEMBLOCK_OVERHEAD  \
+#define BLE_MBUF_MEMBLOCK_OVERHEAD      \
     (sizeof(struct os_mbuf) + BLE_MBUF_PKTHDR_OVERHEAD)
 
 #define BLE_DEV_ADDR_LEN        (6)
 extern uint8_t g_dev_addr[BLE_DEV_ADDR_LEN];
 extern uint8_t g_random_addr[BLE_DEV_ADDR_LEN];
-
-#undef htole16
-#undef htole32
-#undef htole64
-#undef le16toh
-#undef le32toh
-#undef le64toh
-void htole16(void *buf, uint16_t x);
-void htole32(void *buf, uint32_t x);
-void htole64(void *buf, uint64_t x);
-uint16_t le16toh(void *buf);
-uint32_t le32toh(void *buf);
-uint64_t le64toh(void *buf);
-/* XXX */
 
 /* BLE Error Codes (Core v4.2 Vol 2 part D) */
 enum ble_error_codes
@@ -153,7 +158,7 @@ enum ble_error_codes
     BLE_ERR_REPEATED_ATTEMPTS   = 23,
     BLE_ERR_NO_PAIRING          = 24,
     BLE_ERR_UNK_LMP             = 25,
-    BLE_ERR_UNSUPP_FEATURE      = 26,
+    BLE_ERR_UNSUPP_REM_FEATURE  = 26,
     BLE_ERR_SCO_OFFSET          = 27,
     BLE_ERR_SCO_ITVL            = 28,
     BLE_ERR_SCO_AIR_MODE        = 29,
@@ -192,12 +197,49 @@ enum ble_error_codes
     BLE_ERR_CONN_ESTABLISHMENT  = 62,
     BLE_ERR_MAC_CONN_FAIL       = 63,
     BLE_ERR_COARSE_CLK_ADJ      = 64,
-    BLE_ERR_ATTR_NOT_FOUND      = 65,
     BLE_ERR_MAX                 = 255
 };
 
-/* Address types */
-#define BLE_ADDR_TYPE_PUBLIC    (0)
-#define BLE_ADDR_TYPE_RANDOM    (1)
+int ble_err_from_os(int os_err);
+
+/* HW error codes */
+#define BLE_HW_ERR_DO_NOT_USE           (0) /* XXX: reserve this one for now */
+#define BLE_HW_ERR_HCI_SYNC_LOSS        (1)
+
+/* Own Bluetooth Device address type */
+#define BLE_OWN_ADDR_PUBLIC                  (0x00)
+#define BLE_OWN_ADDR_RANDOM                  (0x01)
+#define BLE_OWN_ADDR_RPA_PUBLIC_DEFAULT      (0x02)
+#define BLE_OWN_ADDR_RPA_RANDOM_DEFAULT      (0x03)
+
+/* Bluetooth Device address type */
+#define BLE_ADDR_PUBLIC      (0x00)
+#define BLE_ADDR_RANDOM      (0x01)
+#define BLE_ADDR_PUBLIC_ID   (0x02)
+#define BLE_ADDR_RANDOM_ID   (0x03)
+
+#define BLE_ADDR_ANY (&(ble_addr_t) { 0, {0, 0, 0, 0, 0, 0} })
+
+#define BLE_ADDR_IS_RPA(addr)     (((addr)->type == BLE_ADDR_RANDOM) && \
+                                   ((addr)->val[5] & 0xc0) == 0x40)
+#define BLE_ADDR_IS_NRPA(addr)    (((addr)->type == BLE_ADDR_RANDOM) && \
+                                   (((addr)->val[5] & 0xc0) == 0x00)
+#define BLE_ADDR_IS_STATIC(addr)  (((addr)->type == BLE_ADDR_RANDOM) && \
+                                   (((addr)->val[5] & 0xc0) == 0xc0)
+
+typedef struct {
+    uint8_t type;
+    uint8_t val[6];
+} ble_addr_t;
+
+
+static inline int ble_addr_cmp(const ble_addr_t *a, const ble_addr_t *b)
+{
+    return memcmp(a, b, sizeof(*a));
+}
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* H_BLE_ */

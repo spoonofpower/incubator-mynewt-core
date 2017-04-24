@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -17,6 +17,7 @@
  * under the License.
  */
 
+#include "defs/error.h"
 #include "os/os.h"
 #include "hal/hal_uart.h"
 #include "bsp/bsp.h"
@@ -33,6 +34,13 @@
 #include <assert.h>
 #include <unistd.h>
 #include <string.h>
+#include <termios.h>
+#include <errno.h>
+
+#include "mcu/mcu_sim.h"
+#include "native_uart_cfg_priv.h"
+
+#define UART_CNT                2
 
 #define UART_MAX_BYTES_PER_POLL	64
 #define UART_POLLER_STACK_SZ	OS_STACK_ALIGN(1024)
@@ -48,6 +56,8 @@ struct uart {
     hal_uart_tx_done u_tx_done;
     void *u_func_arg;
 };
+
+const char *native_uart_dev_strs[UART_CNT];
 
 /*
  * XXXX should try to use O_ASYNC/SIGIO for byte arrival notification,
@@ -128,6 +138,37 @@ uart_log_data(struct uart *u, int istx, uint8_t data)
     }
 }
 
+static int
+uart_transmit_char(struct uart *uart)
+{
+    int sr;
+    int rc;
+    char ch;
+
+    OS_ENTER_CRITICAL(sr);
+    rc = uart->u_tx_func(uart->u_func_arg);
+    if (rc < 0) {
+        /*
+         * No more data to send.
+         */
+        uart->u_tx_run = 0;
+        if (uart->u_tx_done) {
+            uart->u_tx_done(uart->u_func_arg);
+        }
+        OS_EXIT_CRITICAL(sr);
+        return 0;
+    }
+    ch = rc;
+    uart_log_data(uart, 1, ch);
+    OS_EXIT_CRITICAL(sr);
+    rc = write(uart->u_fd, &ch, 1);
+    if (rc <= 0) {
+        /* XXX EOF/error, what now? */
+        return -1;
+    }
+    return 0;
+}
+
 static void
 uart_poller(void *arg)
 {
@@ -135,7 +176,7 @@ uart_poller(void *arg)
     int rc;
     int bytes;
     int sr;
-    char ch;
+    unsigned char ch;
     struct uart *uart;
 
     while (1) {
@@ -147,28 +188,9 @@ uart_poller(void *arg)
 
             for (bytes = 0; bytes < UART_MAX_BYTES_PER_POLL; bytes++) {
                 if (uart->u_tx_run) {
-                    OS_ENTER_CRITICAL(sr);
-                    rc = uart->u_tx_func(uart->u_func_arg);
-                    if (rc < 0) {
-                        /*
-                         * No more data to send.
-                         */
-                        uart->u_tx_run = 0;
-                        if (uart->u_tx_done) {
-                            uart->u_tx_done(uart->u_func_arg);
-                        }
-                        OS_EXIT_CRITICAL(sr);
-                        break;
-                    }
-                    uart_log_data(uart, 1, ch);
-                    OS_EXIT_CRITICAL(sr);
-                    ch = rc;
-                    rc = write(uart->u_fd, &ch, 1);
-                    if (rc <= 0) {
-                        /* XXX EOF/error, what now? */
-                        assert(0);
-                        break;
-                    }
+                    uart_transmit_char(uart);
+                } else {
+                    break;
                 }
             }
             for (bytes = 0; bytes < UART_MAX_BYTES_PER_POLL; bytes++) {
@@ -196,7 +218,7 @@ uart_poller(void *arg)
             }
         }
         uart_log_data(NULL, 0, 0);
-        os_time_delay(10);
+        os_time_delay(OS_TICKS_PER_SEC / 100);
     }
 }
 
@@ -219,7 +241,7 @@ set_nonblock(int fd)
 }
 
 static int
-uart_set_attr(int fd)
+uart_pty_set_attr(int fd)
 {
     struct termios tios;
 
@@ -256,7 +278,7 @@ uart_pty(int port)
         return -1;
     }
 
-    if (uart_set_attr(loop_slave)) {
+    if (uart_pty_set_attr(loop_slave)) {
         goto err;
     }
 
@@ -269,6 +291,37 @@ err:
     return -1;
 }
 
+/**
+ * Opens an external device terminal (/dev/cu.<...>).
+ */
+static int
+uart_open_dev(int port, int32_t baudrate, uint8_t databits,
+              uint8_t stopbits, enum hal_uart_parity parity,
+              enum hal_uart_flow_ctl flow_ctl)
+{
+    const char *filename;
+    int fd;
+    int rc;
+
+    filename = native_uart_dev_strs[port];
+    assert(filename != NULL);
+
+    fd = open(filename, O_RDWR);
+    if (fd < 0) {
+        return -1;
+    }
+
+    rc = uart_dev_set_attr(fd, baudrate, databits,
+                           stopbits, parity, flow_ctl);
+    if (rc != 0) {
+        return rc;
+    }
+
+    dprintf(1, "uart%d at %s\n", port, filename);
+
+    return fd;
+}
+
 void
 hal_uart_start_tx(int port)
 {
@@ -279,6 +332,12 @@ hal_uart_start_tx(int port)
     }
     OS_ENTER_CRITICAL(sr);
     uarts[port].u_tx_run = 1;
+    if (!os_started()) {
+        /*
+         * XXX this is a hack.
+         */
+        uart_transmit_char(&uarts[port]);
+    }
     OS_EXIT_CRITICAL(sr);
 }
 
@@ -322,7 +381,7 @@ hal_uart_init_cbs(int port, hal_uart_tx_char tx_func, hal_uart_tx_done tx_done,
 
     if (!uart_poller_running) {
         uart_poller_running = 1;
-        rc = os_task_init(&uart_poller_task, "uart_poller", uart_poller, NULL,
+        rc = os_task_init(&uart_poller_task, "uartpoll", uart_poller, NULL,
           UART_POLLER_PRIO, OS_WAIT_FOREVER, uart_poller_stack,
           UART_POLLER_STACK_SZ);
         assert(rc == 0);
@@ -345,13 +404,67 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
         return -1;
     }
 
-    uart->u_fd = uart_pty(port);
+    if (native_uart_dev_strs[port] == NULL) {
+        uart->u_fd = uart_pty(port);
+    } else {
+        uart->u_fd = uart_open_dev(port, baudrate, databits, stopbits,
+                                   parity, flow_ctl);
+    }
+
     if (uart->u_fd < 0) {
         return -1;
     }
     set_nonblock(uart->u_fd);
 
+
     uart_open_log();
     uart->u_open = 1;
+    return 0;
+}
+
+int
+hal_uart_close(int port)
+{
+    struct uart *uart;
+    int rc;
+
+    if (port >= UART_CNT) {
+        rc = -1;
+        goto err;
+    }
+
+    uart = &uarts[port];
+    if (!uart->u_open) {
+        rc = -1;
+        goto err;
+    }
+
+    close(uart->u_fd);
+
+    uart->u_open = 0;
+    return (0);
+err:
+    return (rc);
+}
+
+int
+hal_uart_init(int port, void *arg)
+{
+    return (0);
+}
+
+int
+uart_set_dev(int port, const char *dev_str)
+{
+    if (port < 0 || port >= UART_CNT) {
+        return SYS_EINVAL;
+    }
+
+    if (uarts[port].u_open) {
+        return SYS_EBUSY;
+    }
+
+    native_uart_dev_strs[port] = dev_str;
+
     return 0;
 }

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -34,14 +34,10 @@ extern "C" {
 /* LED pins */
 #define LED_BLINK_PIN   (0x1)
 
-/* Logical UART ports */
-#define UART_CNT	2
-#define CONSOLE_UART	0
-
-int bsp_imgr_current_slot(void);
+/* UART info */
+#define CONSOLE_UART    	"uart0"
 
 #define NFFS_AREA_MAX    (8)
-
 
 #ifdef __cplusplus
 }

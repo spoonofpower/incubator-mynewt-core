@@ -26,4 +26,4 @@ pkg.keywords:
     - bluetooth
 
 pkg.deps:
-    - libs/os
+    - kernel/os

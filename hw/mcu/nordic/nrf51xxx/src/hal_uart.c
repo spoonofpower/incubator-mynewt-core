@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -21,7 +21,7 @@
 #include "bsp/cmsis_nvic.h"
 #include "bsp/bsp.h"
 
-#include "mcu/nrf.h"
+#include "nrf.h"
 #include "mcu/nrf51_hal.h"
 
 #include <assert.h>
@@ -42,6 +42,7 @@ struct hal_uart {
     hal_uart_tx_char u_tx_func;
     hal_uart_tx_done u_tx_done;
     void *u_func_arg;
+    const struct nrf51_uart_cfg *u_cfg;
 };
 static struct hal_uart uart;
 
@@ -209,9 +210,29 @@ hal_uart_baudrate(int baudrate)
         return UART_BAUDRATE_BAUDRATE_Baud460800;
     case 921600:
         return UART_BAUDRATE_BAUDRATE_Baud921600;
+    case 1000000:
+        return UART_BAUDRATE_BAUDRATE_Baud1M;
     default:
         return 0;
     }
+}
+
+int
+hal_uart_init(int port, void *arg)
+{
+    struct hal_uart *u;
+
+    if (port != 0) {
+        return -1;
+    }
+
+    u = &uart;
+    if (u->u_open) {
+        return -1;
+    }
+    u->u_cfg = arg;
+
+    return 0;
 }
 
 int
@@ -231,7 +252,7 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
     if (u->u_open) {
         return -1;
     }
-    cfg = bsp_uart_config();
+    cfg = u->u_cfg;
     assert(cfg);
 
     /*
@@ -300,4 +321,20 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
     u->u_open = 1;
 
     return 0;
+}
+
+int
+hal_uart_close(int port)
+{
+    struct hal_uart *u;
+
+    u = &uart;
+
+    if (port == 0) {
+        u->u_open = 0;
+        NRF_UART0->ENABLE = 0;
+        NRF_UART0->INTENCLR = 0xffffffff;
+        return 0;
+    }
+    return -1;
 }

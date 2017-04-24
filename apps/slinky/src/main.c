@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -16,6 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
+#include "syscfg/syscfg.h"
+#include "sysinit/sysinit.h"
+#include "sysflash/sysflash.h"
 #include <os/os.h>
 #include <bsp/bsp.h>
 #include <hal/hal_gpio.h>
@@ -25,80 +29,77 @@
 #include <log/log.h>
 #include <stats/stats.h>
 #include <config/config.h>
-#include <hal/flash_map.h>
-#include <fs/fs.h>
-#include <nffs/nffs.h>
+#include "flash_map/flash_map.h"
+#include <hal/hal_system.h>
+#if MYNEWT_VAL(SPLIT_LOADER)
+#include "split/split.h"
+#endif
 #include <newtmgr/newtmgr.h>
+#include <bootutil/image.h>
+#include <bootutil/bootutil.h>
 #include <imgmgr/imgmgr.h>
 #include <assert.h>
 #include <string.h>
-#include <json/json.h>
 #include <flash_test/flash_test.h>
+#include <reboot/log_reboot.h>
+#include <os/os_time.h>
+#include <id/id.h>
 
 #ifdef ARCH_sim
 #include <mcu/mcu_sim.h>
 #endif
 
-/* Init all tasks */
-volatile int tasks_initialized;
-int init_tasks(void);
-
 /* Task 1 */
-#define TASK1_PRIO (1)
-#define TASK1_STACK_SIZE    OS_STACK_ALIGN(128)
-struct os_task task1;
-os_stack_t stack1[TASK1_STACK_SIZE];
+#define TASK1_PRIO (8)
+#define TASK1_STACK_SIZE    OS_STACK_ALIGN(192)
+#define MAX_CBMEM_BUF 600
+static struct os_task task1;
 static volatile int g_task1_loops;
 
 /* Task 2 */
-#define TASK2_PRIO (2)
-#define TASK2_STACK_SIZE    OS_STACK_ALIGN(128)
-struct os_task task2;
-os_stack_t stack2[TASK2_STACK_SIZE];
+#define TASK2_PRIO (9)
+#define TASK2_STACK_SIZE    OS_STACK_ALIGN(64)
+static struct os_task task2;
 
-#define SHELL_TASK_PRIO (3)
-#define SHELL_MAX_INPUT_LEN     (256)
-#define SHELL_TASK_STACK_SIZE (OS_STACK_ALIGN(384))
-os_stack_t shell_stack[SHELL_TASK_STACK_SIZE];
-
-#define NEWTMGR_TASK_PRIO (4)
-#define NEWTMGR_TASK_STACK_SIZE (OS_STACK_ALIGN(512))
-os_stack_t newtmgr_stack[NEWTMGR_TASK_STACK_SIZE];
-
-struct log_handler log_console_handler;
-struct log my_log;
+static struct log my_log;
 
 static volatile int g_task2_loops;
 
 /* Global test semaphore */
-struct os_sem g_test_sem;
+static struct os_sem g_test_sem;
 
 /* For LED toggling */
-int g_led_pin;
+static int g_led_pin;
 
-#define DEFAULT_MBUF_MPOOL_BUF_LEN (256)
-#define DEFAULT_MBUF_MPOOL_NBUFS (10)
+STATS_SECT_START(gpio_stats)
+STATS_SECT_ENTRY(toggles)
+STATS_SECT_END
 
-uint8_t default_mbuf_mpool_data[DEFAULT_MBUF_MPOOL_BUF_LEN *
-    DEFAULT_MBUF_MPOOL_NBUFS];
+static STATS_SECT_DECL(gpio_stats) g_stats_gpio_toggle;
 
-struct os_mbuf_pool default_mbuf_pool;
-struct os_mempool default_mbuf_mpool;
+static STATS_NAME_START(gpio_stats)
+STATS_NAME(gpio_stats, toggles)
+STATS_NAME_END(gpio_stats)
 
 static char *test_conf_get(int argc, char **argv, char *val, int max_len);
 static int test_conf_set(int argc, char **argv, char *val);
 static int test_conf_commit(void);
+static int test_conf_export(void (*export_func)(char *name, char *val),
+  enum conf_export_tgt tgt);
 
 static struct conf_handler test_conf_handler = {
     .ch_name = "test",
     .ch_get = test_conf_get,
     .ch_set = test_conf_set,
-    .ch_commit = test_conf_commit
+    .ch_commit = test_conf_commit,
+    .ch_export = test_conf_export
 };
 
 static uint8_t test8;
 static uint8_t test8_shadow;
 static char test_str[32];
+static uint32_t cbmem_buf[MAX_CBMEM_BUF];
+static struct cbmem cbmem;
 
 static char *
 test_conf_get(int argc, char **argv, char *buf, int max_len)
@@ -134,14 +135,35 @@ test_conf_commit(void)
     return 0;
 }
 
-void
+static int
+test_conf_export(void (*func)(char *name, char *val), enum conf_export_tgt tgt)
+{
+    char buf[4];
+
+    conf_str_from_value(CONF_INT8, &test8, buf, sizeof(buf));
+    func("test/8", buf);
+    func("test/str", test_str);
+    return 0;
+}
+
+static void
 task1_handler(void *arg)
 {
     struct os_task *t;
+    int prev_pin_state, curr_pin_state;
+    struct image_version ver;
 
     /* Set the led pin for the E407 devboard */
     g_led_pin = LED_BLINK_PIN;
     hal_gpio_init_out(g_led_pin, 1);
+
+    if (imgr_my_version(&ver) == 0) {
+        console_printf("\nSlinky %u.%u.%u.%u\n",
+          ver.iv_major, ver.iv_minor, ver.iv_revision,
+          (unsigned int)ver.iv_build_num);
+    } else {
+        console_printf("\nSlinky\n");
+    }
 
     while (1) {
         t = os_sched_get_current_task();
@@ -150,17 +172,21 @@ task1_handler(void *arg)
         ++g_task1_loops;
 
         /* Wait one second */
-        os_time_delay(1000);
+        os_time_delay(OS_TICKS_PER_SEC);
 
         /* Toggle the LED */
-        hal_gpio_toggle(g_led_pin);
+        prev_pin_state = hal_gpio_read(g_led_pin);
+        curr_pin_state = hal_gpio_toggle(g_led_pin);
+        LOG_INFO(&my_log, LOG_MODULE_DEFAULT, "GPIO toggle from %u to %u",
+            prev_pin_state, curr_pin_state);
+        STATS_INC(g_stats_gpio_toggle, toggles);
 
         /* Release semaphore to task 2 */
         os_sem_release(&g_test_sem);
     }
 }
 
-void
+static void
 task2_handler(void *arg)
 {
     struct os_task *t;
@@ -181,34 +207,38 @@ task2_handler(void *arg)
 /**
  * init_tasks
  *
- * Called by main.c after os_init(). This function performs initializations
+ * Called by main.c after sysinit(). This function performs initializations
  * that are required before tasks are running.
  *
  * @return int 0 success; error otherwise.
  */
-int
+static void
 init_tasks(void)
 {
+    os_stack_t *pstack;
+
     /* Initialize global test semaphore */
     os_sem_init(&g_test_sem, 0);
 
+    pstack = malloc(sizeof(os_stack_t)*TASK1_STACK_SIZE);
+    assert(pstack);
+
     os_task_init(&task1, "task1", task1_handler, NULL,
-            TASK1_PRIO, OS_WAIT_FOREVER, stack1, TASK1_STACK_SIZE);
+            TASK1_PRIO, OS_WAIT_FOREVER, pstack, TASK1_STACK_SIZE);
+
+    pstack = malloc(sizeof(os_stack_t)*TASK2_STACK_SIZE);
+    assert(pstack);
 
     os_task_init(&task2, "task2", task2_handler, NULL,
-            TASK2_PRIO, OS_WAIT_FOREVER, stack2, TASK2_STACK_SIZE);
-
-    tasks_initialized = 1;
-    return 0;
+            TASK2_PRIO, OS_WAIT_FOREVER, pstack, TASK2_STACK_SIZE);
 }
-
 
 /**
  * main
  *
- * The main function for the project. This function initializes the os, calls
- * init_tasks to initialize tasks (and possibly other objects), then starts the
- * OS. We should not return from os start.
+ * The main task for the project. This function initializes the packages, calls
+ * init_tasks to initialize additional tasks (and possibly other objects),
+ * then starts serving events from default event queue.
  *
  * @return int NOTE: this function should never return!
  */
@@ -216,81 +246,50 @@ int
 main(int argc, char **argv)
 {
     int rc;
-    int cnt;
-
-    /* NFFS_AREA_MAX is defined in the BSP-specified bsp.h header file. */
-    struct nffs_area_desc descs[NFFS_AREA_MAX];
 
 #ifdef ARCH_sim
     mcu_sim_parse_args(argc, argv);
 #endif
 
-    conf_init();
+    sysinit();
+
     rc = conf_register(&test_conf_handler);
     assert(rc == 0);
 
+    cbmem_init(&cbmem, cbmem_buf, MAX_CBMEM_BUF);
+    log_register("log", &my_log, &log_cbmem_handler, &cbmem, LOG_SYSLEVEL);
 
-    log_init();
+    stats_init(STATS_HDR(g_stats_gpio_toggle),
+               STATS_SIZE_INIT_PARMS(g_stats_gpio_toggle, STATS_SIZE_32),
+               STATS_NAME_INIT_PARMS(gpio_stats));
 
-    log_console_handler_init(&log_console_handler);
-    log_register("log", &my_log, &log_console_handler);
-
-    LOG_DEBUG(&my_log, LOG_MODULE_DEFAULT, "bla");
-    LOG_DEBUG(&my_log, LOG_MODULE_DEFAULT, "bab");
-
-    os_init();
-
-    rc = os_mempool_init(&default_mbuf_mpool, DEFAULT_MBUF_MPOOL_NBUFS, 
-            DEFAULT_MBUF_MPOOL_BUF_LEN, default_mbuf_mpool_data, 
-            "default_mbuf_data");
-    assert(rc == 0);
-
-    rc = os_mbuf_pool_init(&default_mbuf_pool, &default_mbuf_mpool, 
-            DEFAULT_MBUF_MPOOL_BUF_LEN, DEFAULT_MBUF_MPOOL_NBUFS);
-    assert(rc == 0);
-
-    rc = os_msys_register(&default_mbuf_pool);
-    assert(rc == 0);
-
-    rc = hal_flash_init();
-    assert(rc == 0);
-
-    /* Initialize nffs's internal state. */
-    rc = nffs_init();
-    assert(rc == 0);
-
-    /* Convert the set of flash blocks we intend to use for nffs into an array
-     * of nffs area descriptors.
-     */
-    cnt = NFFS_AREA_MAX;
-    rc = flash_area_to_nffs_desc(FLASH_AREA_NFFS, &cnt, descs);
-    assert(rc == 0);
-
-    /* Attempt to restore an existing nffs file system from flash. */
-    if (nffs_detect(descs) == FS_ECORRUPT) {
-        /* No valid nffs instance detected; format a new one. */
-        rc = nffs_format(descs);
-        assert(rc == 0);
-    }
-
-    shell_task_init(SHELL_TASK_PRIO, shell_stack, SHELL_TASK_STACK_SIZE,
-                    SHELL_MAX_INPUT_LEN);
-
-    (void) console_init(shell_console_rx_cb);
-
-    nmgr_task_init(NEWTMGR_TASK_PRIO, newtmgr_stack, NEWTMGR_TASK_STACK_SIZE);
-    imgmgr_module_init();
-
-    stats_module_init();
+    stats_register("gpio_toggle", STATS_HDR(g_stats_gpio_toggle));
 
     flash_test_init();
-    
-    rc = init_tasks();
-    os_start();
 
-    /* os start should never return. If it does, this should be an error */
-    assert(0);
+    conf_load();
 
-    return rc;
+    reboot_start(hal_reset_cause());
+
+    init_tasks();
+
+    /* If this app is acting as the loader in a split image setup, jump into
+     * the second stage application instead of starting the OS.
+     */
+#if MYNEWT_VAL(SPLIT_LOADER)
+    {
+        void *entry;
+        rc = split_app_go(&entry, true);
+        if(rc == 0) {
+            hal_system_restart(entry);
+        }
+    }
+#endif
+
+    /*
+     * As the last thing, process events from default event queue.
+     */
+    while (1) {
+        os_eventq_run(os_eventq_dflt_get());
+    }
 }
-

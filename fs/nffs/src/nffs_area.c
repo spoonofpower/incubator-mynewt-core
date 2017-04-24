@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -45,6 +45,12 @@ nffs_area_is_scratch(const struct nffs_disk_area *disk_area)
 {
     return nffs_area_magic_is_set(disk_area) &&
            disk_area->nda_id == NFFS_AREA_ID_NONE;
+}
+
+int
+nffs_area_is_current_version(const struct nffs_disk_area *disk_area)
+{
+    return disk_area->nda_ver == NFFS_AREA_VER;
 }
 
 void

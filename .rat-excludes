@@ -10,40 +10,80 @@ tags
 RELEASE_NOTES.md
 repository.yml
 .gitignore
+pts-gap.txt
+pts-gatt.txt
+pts-l2cap.txt
+pts-sm.txt
+90359-20161220-172100175.tpg
+90359-20161220-172113981.pts
+00readme.txt
 
 # CRC16 - BSD License.
 crc16.*
 
 # Nordic nRF51 SDK - BSD License.
-boot-nrf51dk.ld
-nrf51dk.ld
 nrf51dk_no_boot.ld
 system_nrf51.c
 gcc_startup_nrf51.s
-boot-nrf51dk-16kbram.ld
-nrf51dk-16kbram.ld
 nrf51dk-16kbram_no_boot.ld
+boot-nrf51xxaa.ld
+nrf51xxaa.ld
+boot-nrf51xxac.ld
+nrf51xxac.ld
+split-nrf51dk.ld
+boot-nrf51xxac.ld
+nrf51xxac.ld
+split-nrf51dk.ld
+split-nrf51dk-16kbram.ld
+nrf51.ld
 nrf51.h
-nrf51422_peripherals.h
-nrf51822_peripherals.h
 nrf51_bitfields.h
 nrf51_deprecated.h
 system_nrf51.h
+gcc_startup_nrf51_split.s
 
 # Nordic nRF52 SDK - BSD License.
-nrf52pdk.ld
+nrf52dk_no_boot.ld
+bmd300eval_no_boot.ld
+boot-nrf52xxaa.ld
+nrf52xxaa.ld
+primo_no_boot.ld
+split-primo.ld
+split-bmd300eval.ld
+split-nrf52dk.ld
+rb-nano2_no_boot.ld
+split-rb-nano2.ld
+nrf52.ld
+ada_feather_nrf52_no_boot.ld
+split_ada_feather_nrf52.ld
+split-microbit.ld
 system_nrf52.c
 gcc_startup_nrf52.s
 nrf51_to_nrf52.h
 nrf52.h
-nrf52832_peripherals.h
 nrf52_bitfields.h
 system_nrf52.h
+gcc_startup_nrf52_split.s
+gcc_startup_nrf52840.s
+nrf51_to_nrf52840.h
+nrf52840.h
+nrf52840_bitfields.h
+nrf52840_peripherals.h
+nrf52_to_nrf52840.h
+system_nrf52840.c
+system_nrf52840.h
 
 # Nordic nRF51 SDK - BSD License.
 # Nordic nRF52 SDK - BSD License.
 compiler_abstraction.h
 nrf.h
+nrf52_name_change.h
+system_nrf51422.c
+arm_startup_nrf51.s
+arm_startup_nrf52.s
+uicr_config.h
+iar_startup_nrf51.s
+iar_startup_nrf52.s
 
 # STM32CubeF4  - BSD License.
 stm32f4xx_hal_conf.h
@@ -128,9 +168,6 @@ stm32f4xx_hal_uart.c
 # klibc - MIT License.
 baselibc
 
-# eLua - MUT License.
-elua
-
 # CMSIS-CORE - BSD License.
 core_ca9.h
 core_caFunc.h
@@ -161,5 +198,54 @@ queue.h
 os_mbuf.c
 base64.c
 
-# crc32.c - Public domain.
-crc32.c
+# tinycrypt - BSD License.
+tinycrypt
+
+# frdm-k64f clock configuration - BSD License.
+clock_config.c
+clock_config.h
+
+# CMSIS Cortex-M4, STM32f4 - BSD License.
+STM32F4xx
+STM32F4xx_HAL_Driver
+
+# NXP SDK - BSD License.
+sdk-2.0-frdm-k64f_b160321
+MK64FN1M0xxx12_flash.ld
+boot-MK64FN1M0xxx12_flash.ld
+startup_MK64F12.S
+
+# LWIP - BSD License.
+lwip_base
+
+# OIC - BSD License.
+oic
+
+# FATFS ChaN License
+diskio.h
+ff.h
+ffconf.h
+integer.h
+ff.c
+unicode.c
+00history.txt
+
+#Codesoucery License
+split-nrf52840pdk.ld
+nrf52840pdk_no_boot.ld
+
+#Freescale Semiconductor License
+boot-mkw41z512.ld
+mkw41z512.ld
+no-boot-mkw41z512.ld
+gcc_startup_mkw41z.s
+MKW41Z4.h
+fsl_device_registers.h
+system_MKW41Z4.h
+MKW41Z4_features.h
+system_MKW41Z4.c
+
+#Imagination Technologies License
+ctx.S
+excpt_isr.S
+uhi32.ld

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -18,13 +18,15 @@
  */
 
 #include <mcu/cortex_m4.h>
+#include <os/os.h>
 #include "hal/hal_system.h"
+#include "stm32f4xx_hal_def.h"
 
 void
-system_reset(void)
+hal_system_reset(void)
 {
     while (1) {
-        if (CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk) {
+        if (hal_debugger_connected()) {
             /*
              * If debugger is attached, breakpoint here.
              */
@@ -34,10 +36,16 @@ system_reset(void)
     }
 }
 
+int
+hal_debugger_connected(void)
+{
+    return CoreDebug->DHCSR & CoreDebug_DHCSR_C_DEBUGEN_Msk;
+}
+
 uint32_t
 HAL_GetTick(void)
 {
-    return 0;
+    return os_time_get();
 }
 
 HAL_StatusTypeDef

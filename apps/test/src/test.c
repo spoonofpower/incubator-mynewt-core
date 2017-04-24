@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -23,7 +23,7 @@
 #include "bootutil/bootutil_test.h"
 #include "testutil/testutil.h"
 #include "mbedtls/mbedtls_test.h"
-#include "config/config_test.h"
+#include "config/../../src/test/config_test.h"
 
 extern int util_test_all(void);
 

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -25,51 +25,18 @@
 #include <assert.h>
 #include "console/console.h"
 #include "host/ble_uuid.h"
-#include "bletiny_priv.h"
+#include "bletiny.h"
 
 #define CMD_MAX_ARGS        16
 
 static char *cmd_args[CMD_MAX_ARGS][2];
 static int cmd_num_args;
 
-void
-print_addr(void *addr)
-{
-    uint8_t *u8p;
-
-    u8p = addr;
-    BLETINY_LOG(INFO, "%02x:%02x:%02x:%02x:%02x:%02x",
-                u8p[5], u8p[4], u8p[3], u8p[2], u8p[1], u8p[0]);
-}
-
-void
-print_uuid(void *uuid128)
-{
-    uint16_t uuid16;
-    uint8_t *u8p;
-
-    uuid16 = ble_uuid_128_to_16(uuid128);
-    if (uuid16 != 0) {
-        BLETINY_LOG(INFO, "0x%04x", uuid16);
-        return;
-    }
-
-    u8p = uuid128;
-
-    /* 00001101-0000-1000-8000-00805f9b34fb */
-    BLETINY_LOG(INFO, "%02x%02x%02x%02x-", u8p[15], u8p[14], u8p[13],
-                u8p[12]);
-    BLETINY_LOG(INFO, "%02x%02x-%02x%02x-", u8p[11], u8p[10], u8p[9], u8p[8]);
-    BLETINY_LOG(INFO, "%02x%02x%02x%02x%02x%02x%02x%02x",
-                u8p[7], u8p[6], u8p[5], u8p[4],
-                u8p[3], u8p[2], u8p[1], u8p[0]);
-}
-
 int
 parse_err_too_few_args(char *cmd_name)
 {
-    BLETINY_LOG(ERROR, "Error: too few arguments for command \"%s\"\n",
-                cmd_name);
+    console_printf("Error: too few arguments for command \"%s\"\n",
+                   cmd_name);
     return -1;
 }
 
@@ -105,8 +72,36 @@ parse_kv_find(struct kv_pair *kvs, char *name)
     return NULL;
 }
 
+int
+parse_arg_find_idx(const char *key)
+{
+    int i;
+
+    for (i = 0; i < cmd_num_args; i++) {
+        if (strcmp(cmd_args[i][0], key) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
 char *
-parse_arg_find(char *key)
+parse_arg_peek(const char *key)
+{
+    int i;
+
+    for (i = 0; i < cmd_num_args; i++) {
+        if (strcmp(cmd_args[i][0], key) == 0) {
+            return cmd_args[i][1];
+        }
+    }
+
+    return NULL;
+}
+
+char *
+parse_arg_extract(const char *key)
 {
     int i;
 
@@ -122,20 +117,97 @@ parse_arg_find(char *key)
     return NULL;
 }
 
+/**
+ * Determines which number base to use when parsing the specified numeric
+ * string.  This just avoids base '0' so that numbers don't get interpreted as
+ * octal.
+ */
+static int
+parse_arg_long_base(char *sval)
+{
+    if (sval[0] == '0' && sval[1] == 'x') {
+        return 0;
+    } else {
+        return 10;
+    }
+}
+
+long
+parse_long_bounds(char *sval, long min, long max, int *out_status)
+{
+    char *endptr;
+    long lval;
+
+    lval = strtol(sval, &endptr, parse_arg_long_base(sval));
+    if (sval[0] != '\0' && *endptr == '\0' &&
+        lval >= min && lval <= max) {
+
+        *out_status = 0;
+        return lval;
+    }
+
+    *out_status = EINVAL;
+    return 0;
+}
+
+long
+parse_arg_long_bounds_peek(char *name, long min, long max, int *out_status)
+{
+    char *sval;
+
+    sval = parse_arg_peek(name);
+    if (sval == NULL) {
+        *out_status = ENOENT;
+        return 0;
+    }
+    return parse_long_bounds(sval, min, max, out_status);
+}
+
 long
 parse_arg_long_bounds(char *name, long min, long max, int *out_status)
 {
+    char *sval;
+
+    sval = parse_arg_extract(name);
+    if (sval == NULL) {
+        *out_status = ENOENT;
+        return 0;
+    }
+    return parse_long_bounds(sval, min, max, out_status);
+}
+
+long
+parse_arg_long_bounds_default(char *name, long min, long max,
+                              long dflt, int *out_status)
+{
+    long val;
+    int rc;
+
+    val = parse_arg_long_bounds(name, min, max, &rc);
+    if (rc == ENOENT) {
+        rc = 0;
+        val = dflt;
+    }
+
+    *out_status = rc;
+
+    return val;
+}
+
+uint64_t
+parse_arg_uint64_bounds(char *name, uint64_t min, uint64_t max, int *out_status)
+{
     char *endptr;
     char *sval;
-    long lval;
+    uint64_t lval;
 
-    sval = parse_arg_find(name);
+    sval = parse_arg_extract(name);
     if (sval == NULL) {
         *out_status = ENOENT;
         return 0;
     }
 
-    lval = strtol(sval, &endptr, 0);
+    lval = strtoull(sval, &endptr, parse_arg_long_base(sval));
     if (sval[0] != '\0' && *endptr == '\0' &&
         lval >= min && lval <= max) {
 
@@ -153,16 +225,62 @@ parse_arg_long(char *name, int *out_status)
     return parse_arg_long_bounds(name, LONG_MIN, LONG_MAX, out_status);
 }
 
+uint8_t
+parse_arg_bool(char *name, int *out_status)
+{
+    return parse_arg_long_bounds(name, 0, 1, out_status);
+}
+
+uint8_t
+parse_arg_bool_default(char *name, uint8_t dflt, int *out_status)
+{
+    return parse_arg_long_bounds_default(name, 0, 1, dflt, out_status);
+}
+
+uint8_t
+parse_arg_uint8(char *name, int *out_status)
+{
+    return parse_arg_long_bounds(name, 0, UINT8_MAX, out_status);
+}
+
 uint16_t
 parse_arg_uint16(char *name, int *out_status)
 {
     return parse_arg_long_bounds(name, 0, UINT16_MAX, out_status);
 }
 
+uint16_t
+parse_arg_uint16_peek(char *name, int *out_status)
+{
+    return parse_arg_long_bounds_peek(name, 0, UINT16_MAX, out_status);
+}
+
 uint32_t
 parse_arg_uint32(char *name, int *out_status)
 {
-    return parse_arg_long_bounds(name, 0, UINT32_MAX, out_status);
+    return parse_arg_uint64_bounds(name, 0, UINT32_MAX, out_status);
+}
+
+uint64_t
+parse_arg_uint64(char *name, int *out_status)
+{
+    return parse_arg_uint64_bounds(name, 0, UINT64_MAX, out_status);
+}
+
+uint8_t
+parse_arg_uint8_dflt(char *name, uint8_t dflt, int *out_status)
+{
+    uint8_t val;
+    int rc;
+
+    val = parse_arg_uint8(name, &rc);
+    if (rc == ENOENT) {
+        val = dflt;
+        rc = 0;
+    }
+
+    *out_status = rc;
+    return val;
 }
 
 uint16_t
@@ -181,60 +299,62 @@ parse_arg_uint16_dflt(char *name, uint16_t dflt, int *out_status)
     return val;
 }
 
+uint32_t
+parse_arg_uint32_dflt(char *name, uint32_t dflt, int *out_status)
+{
+    uint32_t val;
+    int rc;
+
+    val = parse_arg_uint32(name, &rc);
+    if (rc == ENOENT) {
+        val = dflt;
+        rc = 0;
+    }
+
+    *out_status = rc;
+    return val;
+}
+
 int
-parse_arg_kv(char *name, struct kv_pair *kvs)
+parse_arg_kv(char *name, struct kv_pair *kvs, int *out_status)
 {
     struct kv_pair *kv;
     char *sval;
 
-    sval = parse_arg_find(name);
+    sval = parse_arg_extract(name);
     if (sval == NULL) {
-        return ENOENT;
+        *out_status = ENOENT;
+        return -1;
     }
 
     kv = parse_kv_find(kvs, sval);
     if (kv == NULL) {
-        return EINVAL;
+        *out_status = EINVAL;
+        return -1;
     }
 
+    *out_status = 0;
     return kv->val;
 }
 
-static int
-parse_arg_byte_stream_no_delim(char *sval, int max_len, uint8_t *dst,
-                               int *out_len)
+int
+parse_arg_kv_default(char *name, struct kv_pair *kvs, int def_val,
+                     int *out_status)
 {
-    unsigned long ul;
-    char *endptr;
-    char buf[3];
-    int i;
+    int val;
+    int rc;
 
-    buf[2] = '\0';
-    i = 0;
-    while (1) {
-        if (sval[i * 2] == '\0') {
-            *out_len = i;
-            return 0;
-        }
-
-        if (i >= max_len) {
-            return EINVAL;
-        }
-
-        buf[0] = sval[i * 2 + 0];
-        buf[1] = sval[i * 2 + 1];
-
-        ul = strtoul(buf, &endptr, 16);
-        if (*sval == '\0' || *endptr != '\0') {
-            return EINVAL;
-        }
-
-        assert(ul <= UINT8_MAX);
-        dst[i] = ul;
-
-        i++;
+    val = parse_arg_kv(name, kvs, &rc);
+    if (rc == ENOENT) {
+        rc = 0;
+        val = def_val;
     }
+
+    *out_status = rc;
+
+    return val;
 }
+
 
 static int
 parse_arg_byte_stream_delim(char *sval, char *delims, int max_len,
@@ -271,20 +391,14 @@ parse_arg_byte_stream_delim(char *sval, char *delims, int max_len,
 int
 parse_arg_byte_stream(char *name, int max_len, uint8_t *dst, int *out_len)
 {
-    int total_len;
     char *sval;
 
-    sval = parse_arg_find(name);
+    sval = parse_arg_extract(name);
     if (sval == NULL) {
         return ENOENT;
     }
 
-    total_len = strlen(sval);
-    if (strcspn(sval, ":-") == total_len) {
-        return parse_arg_byte_stream_no_delim(sval, max_len, dst, out_len);
-    } else {
-        return parse_arg_byte_stream_delim(sval, ":-", max_len, dst, out_len);
-    }
+    return parse_arg_byte_stream_delim(sval, ":-", max_len, dst, out_len);
 }
 
 int
@@ -293,7 +407,7 @@ parse_arg_byte_stream_exact_length(char *name, uint8_t *dst, int len)
     int actual_len;
     int rc;
 
-    rc = parse_arg_byte_stream(name, 6, dst, &actual_len);
+    rc = parse_arg_byte_stream(name, len, dst, &actual_len);
     if (rc != 0) {
         return rc;
     }
@@ -334,69 +448,41 @@ parse_arg_mac(char *name, uint8_t *dst)
 }
 
 int
-parse_arg_uuid(char *str, uint8_t *dst_uuid128)
+parse_arg_uuid(char *str, ble_uuid_any_t *uuid)
 {
     uint16_t uuid16;
-    char *tok;
+    uint8_t val[16];
+    int len;
     int rc;
 
-    uuid16 = parse_arg_uint16(str, &rc);
+    uuid16 = parse_arg_uint16_peek(str, &rc);
     switch (rc) {
     case ENOENT:
+        parse_arg_extract(str);
         return ENOENT;
 
     case 0:
-        rc = ble_uuid_16_to_128(uuid16, dst_uuid128);
-        if (rc != 0) {
-            return EINVAL;
-        } else {
-            return 0;
-        }
+        len = 2;
+        val[0] = uuid16;
+        val[1] = uuid16 >> 8;
+        parse_arg_extract(str);
+        break;
 
     default:
-        /* e7add801-b042-4876-aae1112855353cc1 */
-        if (strlen(str) == 35) {
-            tok = strtok(str, "-");
-            if (tok == NULL) {
-                return EINVAL;
-            }
-            rc = parse_arg_byte_stream_exact_length(tok, dst_uuid128 + 0, 4);
-            if (rc != 0) {
-                return rc;
-            }
-
-            tok = strtok(NULL, "-");
-            if (tok == NULL) {
-                return EINVAL;
-            }
-            rc = parse_arg_byte_stream_exact_length(tok, dst_uuid128 + 4, 2);
-            if (rc != 0) {
-                return rc;
-            }
-
-            tok = strtok(NULL, "-");
-            if (tok == NULL) {
-                return EINVAL;
-            }
-            rc = parse_arg_byte_stream_exact_length(tok, dst_uuid128 + 6, 2);
-            if (rc != 0) {
-                return rc;
-            }
-
-            tok = strtok(NULL, "-");
-            if (tok == NULL) {
-                return EINVAL;
-            }
-            rc = parse_arg_byte_stream_exact_length(tok, dst_uuid128 + 8, 8);
-            if (rc != 0) {
-                return rc;
-            }
-
-            return 0;
+        len = 16;
+        rc = parse_arg_byte_stream_exact_length(str, val, 16);
+        if (rc != 0) {
+            return EINVAL;
         }
+        parse_reverse_bytes(val, 16);
+        break;
+    }
 
-        rc = parse_arg_byte_stream_exact_length(str, dst_uuid128, 16);
-        return rc;
+    rc = ble_uuid_init_from_buf(uuid, val, len);
+    if (rc != 0) {
+        return EINVAL;
+    } else {
+        return 0;
     }
 }
 
@@ -415,12 +501,12 @@ parse_arg_all(int argc, char **argv)
 
         if (key != NULL && val != NULL) {
             if (strlen(key) == 0) {
-                BLETINY_LOG(ERROR, "Error: invalid argument: %s\n", argv[i]);
+                console_printf("Error: invalid argument: %s\n", argv[i]);
                 return -1;
             }
 
             if (cmd_num_args >= CMD_MAX_ARGS) {
-                BLETINY_LOG(ERROR, "Error: too many arguments");
+                console_printf("Error: too many arguments");
                 return -1;
             }
 
@@ -432,4 +518,3 @@ parse_arg_all(int argc, char **argv)
 
     return 0;
 }
-

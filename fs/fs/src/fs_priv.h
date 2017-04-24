@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,11 +19,26 @@
 #ifndef __FS_PRIV_H__
 #define __FS_PRIV_H__
 
-struct fs_ops;
-extern const struct fs_ops *fs_root_ops;
+#include "syscfg/syscfg.h"
 
-#ifdef SHELL_PRESENT
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct fs_ops;
+struct fs_ops *fs_ops_for(const char *fs_name);
+struct fs_ops *safe_fs_ops_for(const char *fs_name);
+
+#if MYNEWT_VAL(FS_CLI)
 void fs_cli_init(void);
-#endif /* SHELL_PRESENT */
+#endif
+
+#if MYNEWT_VAL(FS_NMGR)
+int fs_nmgr_init(void);
+#endif
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

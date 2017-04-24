@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -23,6 +23,13 @@
 #include "testutil/testutil.h"
 #include "nffs_priv.h"
 #include "nffs/nffs.h"
+
+/**
+ * Keeps track of the number of garbage collections performed.  The exact
+ * number is not important, but it is useful to compare against an older copy
+ * to determine if garbage collection occurred.
+ */
+unsigned int nffs_gc_count;
 
 static int
 nffs_gc_copy_object(struct nffs_hash_entry *entry, uint16_t object_size,
@@ -187,8 +194,6 @@ nffs_gc_block_chain_collate(struct nffs_hash_entry *last_entry,
         goto done;
     }
 
-    memset(&last_block, 0, sizeof(last_block));
-    
     to_area = nffs_areas + to_area_idx;
 
     entry = last_entry;
@@ -203,6 +208,7 @@ nffs_gc_block_chain_collate(struct nffs_hash_entry *last_entry,
         nffs_flash_loc_expand(block.nb_hash_entry->nhe_flash_loc,
                               &from_area_idx, &from_area_offset);
         from_area_offset += sizeof disk_block;
+        STATS_INC(nffs_stats, nffs_readcnt_gccollate);
         rc = nffs_flash_read(from_area_idx, from_area_offset,
                              data + data_offset, block.nb_data_len);
         if (rc != 0) {
@@ -219,7 +225,7 @@ nffs_gc_block_chain_collate(struct nffs_hash_entry *last_entry,
         }
         entry = block.nb_prev;
     }
-    
+
     /* we had better have found the last block */
     assert(last_block.nb_hash_entry);
 
@@ -229,7 +235,6 @@ nffs_gc_block_chain_collate(struct nffs_hash_entry *last_entry,
      * block.
      */
     memset(&disk_block, 0, sizeof disk_block);
-    disk_block.ndb_magic = NFFS_BLOCK_MAGIC;
     disk_block.ndb_id = last_block.nb_hash_entry->nhe_id;
     disk_block.ndb_seq = last_block.nb_seq + 1;
     disk_block.ndb_inode_id = last_block.nb_inode_entry->nie_hash_entry.nhe_id;
@@ -420,6 +425,18 @@ nffs_gc_inode_blocks(struct nffs_inode_entry *inode_entry,
  *      number is incremented prior to rewriting the header.  This area is now
  *      the new scratch sector.
  *
+ * NOTE:
+ *     Garbage collection invalidates all cached data blocks.  Whenever this
+ *     function is called, all existing nffs_cache_block pointers are rendered
+ *     invalid.  If you maintain any such pointers, you need to reset them
+ *     after calling this function.  Cached inodes are not invalidated by
+ *     garbage collection.
+ *
+ *     If a parent function potentially calls this function, the caller of the
+ *     parent function needs to explicitly check if garbage collection
+ *     occurred.  This is done by inspecting the nffs_gc_count variable before
+ *     and after calling the function.
+ *
  * @param out_area_idx      On success, the ID of the cleaned up area gets
  *                              written here.  Pass null if you do not need
  *                              this information.
@@ -501,6 +518,22 @@ nffs_gc(uint8_t *out_area_idx)
     }
 
     nffs_scratch_area_idx = from_area_idx;
+
+    /* Garbage collection renders the cache invalid:
+     *     o All cached blocks are now invalid; drop them.
+     *     o Flash locations of inodes may have changed; the cached inodes need
+     *       updated to reflect this.
+     */
+    rc = nffs_cache_inode_refresh();
+    if (rc != 0) {
+        return rc;
+    }
+
+    /* Increment the garbage collection counter so that client code knows to
+     * reset its pointers to cached objects.
+     */
+    nffs_gc_count++;
+    STATS_INC(nffs_stats, nffs_gccnt);
 
     return 0;
 }

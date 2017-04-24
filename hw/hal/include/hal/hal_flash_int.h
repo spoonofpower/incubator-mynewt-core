@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -17,19 +17,30 @@
  * under the License.
  */
 
-#ifndef H_HAL_FLASH_INT
-#define H_HAL_FLASH_INT
+#ifndef H_HAL_FLASH_INT_
+#define H_HAL_FLASH_INT_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #include <inttypes.h>
+
 /*
  * API that flash driver has to implement.
  */
+struct hal_flash;
+
 struct hal_flash_funcs {
-    int (*hff_read)(uint32_t address, void *dst, uint32_t num_bytes);
-    int (*hff_write)(uint32_t address, const void *src, uint32_t num_bytes);
-    int (*hff_erase_sector)(uint32_t sector_address);
-    int (*hff_sector_info)(int idx, uint32_t *address, uint32_t *size);
-    int (*hff_init)(void);
+    int (*hff_read)(const struct hal_flash *dev, uint32_t address, void *dst,
+            uint32_t num_bytes);
+    int (*hff_write)(const struct hal_flash *dev, uint32_t address,
+            const void *src, uint32_t num_bytes);
+    int (*hff_erase_sector)(const struct hal_flash *dev,
+            uint32_t sector_address);
+    int (*hff_sector_info)(const struct hal_flash *dev, int idx,
+            uint32_t *address, uint32_t *size);
+    int (*hff_init)(const struct hal_flash *dev);
 };
 
 struct hal_flash {
@@ -37,7 +48,7 @@ struct hal_flash {
     uint32_t hf_base_addr;
     uint32_t hf_size;
     int hf_sector_cnt;
-    int hf_align;		/* Alignment requirement. 1 if unrestricted. */
+    int hf_align;       /* Alignment requirement. 1 if unrestricted. */
 };
 
 /*
@@ -45,7 +56,9 @@ struct hal_flash {
  */
 uint32_t hal_flash_sector_size(const struct hal_flash *hf, int sec_idx);
 
-/* External function prototype supplied by BSP */
-const struct hal_flash *bsp_flash_dev(uint8_t flash_id);
 
-#endif /* H_HAL_FLASH_INT */
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* H_HAL_FLASH_INT_ */

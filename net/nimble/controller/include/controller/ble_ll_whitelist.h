@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -19,6 +19,10 @@
 
 #ifndef H_BLE_LL_WHITELIST_
 #define H_BLE_LL_WHITELIST_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* Clear the whitelist */
 int ble_ll_whitelist_clear(void);
@@ -39,6 +43,10 @@ void ble_ll_whitelist_enable(void);
 void ble_ll_whitelist_disable(void);
 
 /* Boolean function returning true if address matches a whitelist entry */
-int ble_ll_whitelist_match(uint8_t *addr, uint8_t addr_type);
+int ble_ll_whitelist_match(uint8_t *addr, uint8_t addr_type, int is_ident);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* H_BLE_LL_WHITELIST_ */

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -21,7 +21,7 @@
 #include "bsp/cmsis_nvic.h"
 #include "bsp/bsp.h"
 
-#include "mcu/nrf.h"
+#include "nrf.h"
 #include "mcu/nrf52_hal.h"
 
 #include <assert.h>
@@ -31,6 +31,7 @@
 #define UARTE_CONFIG_PARITY	UARTE_CONFIG_PARITY_Msk
 #define UARTE_CONFIG_HWFC	UARTE_CONFIG_HWFC_Msk
 #define UARTE_ENABLE		UARTE_ENABLE_ENABLE_Enabled
+#define UARTE_DISABLE           UARTE_ENABLE_ENABLE_Disabled
 
 /*
  * Only one UART on NRF 52832.
@@ -91,6 +92,9 @@ hal_uart_start_tx(int port)
     int sr;
     int rc;
 
+    if (port != 0) {
+        return;
+    }
     u = &uart;
     __HAL_DISABLE_INTERRUPTS(sr);
     if (u->u_tx_started == 0) {
@@ -113,6 +117,9 @@ hal_uart_start_rx(int port)
     int sr;
     int rc;
 
+    if (port != 0) {
+        return;
+    }
     u = &uart;
     if (u->u_rx_stall) {
         __HAL_DISABLE_INTERRUPTS(sr);
@@ -130,6 +137,10 @@ void
 hal_uart_blocking_tx(int port, uint8_t data)
 {
     struct hal_uart *u;
+
+    if (port != 0) {
+        return;
+    }
 
     u = &uart;
     if (!u->u_open) {
@@ -202,6 +213,8 @@ hal_uart_baudrate(int baudrate)
         return UARTE_BAUDRATE_BAUDRATE_Baud38400;
     case 57600:
         return UARTE_BAUDRATE_BAUDRATE_Baud57600;
+    case 76800:
+        return UARTE_BAUDRATE_BAUDRATE_Baud76800;
     case 115200:
         return UARTE_BAUDRATE_BAUDRATE_Baud115200;
     case 230400:
@@ -210,9 +223,31 @@ hal_uart_baudrate(int baudrate)
         return UARTE_BAUDRATE_BAUDRATE_Baud460800;
     case 921600:
         return UARTE_BAUDRATE_BAUDRATE_Baud921600;
+    case 1000000:
+        return UARTE_BAUDRATE_BAUDRATE_Baud1M;
     default:
         return 0;
     }
+}
+
+int
+hal_uart_init(int port, void *arg)
+{
+    struct nrf52_uart_cfg *cfg;
+
+    if (port != 0) {
+        return -1;
+    }
+    cfg = (struct nrf52_uart_cfg *)arg;
+
+    NRF_UARTE0->PSEL.TXD = cfg->suc_pin_tx;
+    NRF_UARTE0->PSEL.RXD = cfg->suc_pin_rx;
+    NRF_UARTE0->PSEL.RTS = cfg->suc_pin_rts;
+    NRF_UARTE0->PSEL.CTS = cfg->suc_pin_cts;
+
+    NVIC_SetVector(UARTE0_UART0_IRQn, (uint32_t)uart_irq_handler);
+
+    return 0;
 }
 
 int
@@ -220,7 +255,6 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
   enum hal_uart_parity parity, enum hal_uart_flow_ctl flow_ctl)
 {
     struct hal_uart *u;
-    const struct nrf52_uart_cfg *cfg;
     uint32_t cfg_reg = 0;
     uint32_t baud_reg;
 
@@ -232,8 +266,6 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
     if (u->u_open) {
         return -1;
     }
-    cfg = bsp_uart_config();
-    assert(cfg);
 
     /*
      * pin config
@@ -263,7 +295,8 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
         break;
     case HAL_UART_FLOW_CTL_RTS_CTS:
         cfg_reg |= UARTE_CONFIG_HWFC;
-        if (cfg->suc_pin_rts < 0 || cfg->suc_pin_cts < 0) {
+        if (NRF_UARTE0->PSEL.RTS == 0xffffffff ||
+          NRF_UARTE0->PSEL.CTS == 0xffffffff) {
             /*
              * Can't turn on HW flow control if pins to do that are not
              * defined.
@@ -279,19 +312,9 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
     }
     NRF_UARTE0->ENABLE = 0;
     NRF_UARTE0->INTENCLR = 0xffffffff;
-    NRF_UARTE0->PSEL.TXD = cfg->suc_pin_tx;
-    NRF_UARTE0->PSEL.RXD = cfg->suc_pin_rx;
-    if (flow_ctl == HAL_UART_FLOW_CTL_RTS_CTS) {
-        NRF_UARTE0->PSEL.RTS = cfg->suc_pin_rts;
-        NRF_UARTE0->PSEL.CTS = cfg->suc_pin_cts;
-    } else {
-        NRF_UARTE0->PSEL.RTS = 0xffffffff;
-        NRF_UARTE0->PSEL.CTS = 0xffffffff;
-    }
     NRF_UARTE0->BAUDRATE = baud_reg;
     NRF_UARTE0->CONFIG = cfg_reg;
 
-    NVIC_SetVector(UARTE0_UART0_IRQn, (uint32_t)uart_irq_handler);
     NVIC_EnableIRQ(UARTE0_UART0_IRQn);
 
     NRF_UARTE0->ENABLE = UARTE_ENABLE;
@@ -301,7 +324,25 @@ hal_uart_config(int port, int32_t baudrate, uint8_t databits, uint8_t stopbits,
     NRF_UARTE0->RXD.MAXCNT = sizeof(u->u_rx_buf);
     NRF_UARTE0->TASKS_STARTRX = 1;
 
+    u->u_rx_stall = 0;
+    u->u_tx_started = 0;
     u->u_open = 1;
 
     return 0;
+}
+
+int
+hal_uart_close(int port)
+{
+    struct hal_uart *u;
+
+    u = &uart;
+
+    if (port == 0) {
+        u->u_open = 0;
+        NRF_UARTE0->ENABLE = 0;
+        NRF_UARTE0->INTENCLR = 0xffffffff;
+        return 0;
+    }
+    return -1;
 }

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,18 +21,26 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
+
+#include "sysinit/sysinit.h"
+#include "sysflash/sysflash.h"
+#include "bsp/bsp.h"
 #include "hal/hal_flash.h"
+#include "flash_map/flash_map.h"
 #include "os/os_mempool.h"
 #include "os/os_mutex.h"
 #include "os/os_malloc.h"
+#include "stats/stats.h"
 #include "nffs_priv.h"
 #include "nffs/nffs.h"
 #include "fs/fs_if.h"
+#include "disk/disk.h"
 
 struct nffs_area *nffs_areas;
 uint8_t nffs_num_areas;
 uint8_t nffs_scratch_area_idx;
 uint16_t nffs_block_max_data_sz;
+struct nffs_area_desc *nffs_current_area_descs;
 
 struct os_mempool nffs_file_pool;
 struct os_mempool nffs_dir_pool;
@@ -53,7 +61,6 @@ struct nffs_inode_entry *nffs_lost_found_dir;
 
 static struct os_mutex nffs_mutex;
 
-static struct log_handler nffs_log_console_handler;
 struct log nffs_log;
 
 static int nffs_open(const char *path, uint8_t access_flags,
@@ -75,7 +82,7 @@ static int nffs_dirent_name(const struct fs_dirent *fs_dirent, size_t max_len,
   char *out_name, uint8_t *out_name_len);
 static int nffs_dirent_is_dir(const struct fs_dirent *fs_dirent);
 
-static const struct fs_ops nffs_ops = {
+struct fs_ops nffs_ops = {
     .f_open = nffs_open,
     .f_close = nffs_close,
     .f_read = nffs_read,
@@ -99,6 +106,29 @@ static const struct fs_ops nffs_ops = {
     .f_name = "nffs"
 };
 
+STATS_SECT_DECL(nffs_stats) nffs_stats;
+STATS_NAME_START(nffs_stats)
+    STATS_NAME(nffs_stats, nffs_hashcnt_ins)
+    STATS_NAME(nffs_stats, nffs_hashcnt_rm)
+    STATS_NAME(nffs_stats, nffs_object_count)
+    STATS_NAME(nffs_stats, nffs_iocnt_read)
+    STATS_NAME(nffs_stats, nffs_iocnt_write)
+    STATS_NAME(nffs_stats, nffs_gccnt)
+    STATS_NAME(nffs_stats, nffs_readcnt_data)
+    STATS_NAME(nffs_stats, nffs_readcnt_block)
+    STATS_NAME(nffs_stats, nffs_readcnt_crc)
+    STATS_NAME(nffs_stats, nffs_readcnt_copy)
+    STATS_NAME(nffs_stats, nffs_readcnt_format)
+    STATS_NAME(nffs_stats, nffs_readcnt_gccollate)
+    STATS_NAME(nffs_stats, nffs_readcnt_inode)
+    STATS_NAME(nffs_stats, nffs_readcnt_inodeent)
+    STATS_NAME(nffs_stats, nffs_readcnt_rename)
+    STATS_NAME(nffs_stats, nffs_readcnt_update)
+    STATS_NAME(nffs_stats, nffs_readcnt_filename)
+    STATS_NAME(nffs_stats, nffs_readcnt_object)
+    STATS_NAME(nffs_stats, nffs_readcnt_detect)
+STATS_NAME_END(nffs_stats)
+
 static void
 nffs_lock(void)
 {
@@ -115,6 +145,26 @@ nffs_unlock(void)
 
     rc = os_mutex_release(&nffs_mutex);
     assert(rc == 0 || rc == OS_NOT_STARTED);
+}
+
+static int
+nffs_stats_init(void)
+{
+    int rc = 0;
+    rc = stats_init_and_reg(
+                    STATS_HDR(nffs_stats),
+                    STATS_SIZE_INIT_PARMS(nffs_stats, STATS_SIZE_32),
+                    STATS_NAME_INIT_PARMS(nffs_stats),
+                    "nffs_stats");
+    if (rc) {
+        if (rc < 0) {
+            /* multiple initializations are okay */
+            rc = 0;
+        } else {
+            rc = FS_EOS;
+        }
+    }
+    return rc;
 }
 
 /**
@@ -143,6 +193,7 @@ nffs_open(const char *path, uint8_t access_flags, struct fs_file **out_fs_file)
 {
     int rc;
     struct nffs_file *out_file;
+    char *filepath = NULL;
 
     nffs_lock();
 
@@ -151,12 +202,17 @@ nffs_open(const char *path, uint8_t access_flags, struct fs_file **out_fs_file)
         goto done;
     }
 
-    rc = nffs_file_open(&out_file, path, access_flags);
+    filepath = disk_filepath_from_path(path);
+
+    rc = nffs_file_open(&out_file, filepath, access_flags);
     if (rc != 0) {
         goto done;
     }
     *out_fs_file = (struct fs_file *)out_file;
 done:
+    if (filepath) {
+        free(filepath);
+    }
     nffs_unlock();
     if (rc != 0) {
         *out_fs_file = NULL;
@@ -442,6 +498,7 @@ nffs_opendir(const char *path, struct fs_dir **out_fs_dir)
 {
     int rc;
     struct nffs_dir **out_dir = (struct nffs_dir **)out_fs_dir;
+    char *filepath = NULL;
 
     nffs_lock();
 
@@ -450,10 +507,18 @@ nffs_opendir(const char *path, struct fs_dir **out_fs_dir)
         goto done;
     }
 
-    rc = nffs_dir_open(path, out_dir);
+    filepath = disk_filepath_from_path(path);
+
+    rc = nffs_dir_open(filepath, out_dir);
 
 done:
+    if (filepath) {
+        free(filepath);
+    }
     nffs_unlock();
+    if (rc != 0) {
+        *out_dir = NULL;
+    }
     return rc;
 }
 
@@ -623,6 +688,11 @@ nffs_init(void)
 
     nffs_cache_clear();
 
+    rc = nffs_stats_init();
+    if (rc != 0) {
+        return FS_EOS;
+    }
+
     rc = os_mutex_init(&nffs_mutex);
     if (rc != 0) {
         return FS_EOS;
@@ -675,10 +745,6 @@ nffs_init(void)
         return FS_ENOMEM;
     }
 
-    log_init();
-    log_console_handler_init(&nffs_log_console_handler);
-    log_register("nffs", &nffs_log, &nffs_log_console_handler);
-
     rc = nffs_misc_reset();
     if (rc != 0) {
         return rc;
@@ -686,4 +752,57 @@ nffs_init(void)
 
     fs_register(&nffs_ops);
     return 0;
+}
+
+void
+nffs_pkg_init(void)
+{
+    struct nffs_area_desc descs[NFFS_AREA_MAX + 1];
+    int cnt;
+    int rc;
+
+    /* Ensure this function only gets called by sysinit. */
+    SYSINIT_ASSERT_ACTIVE();
+
+    /* Initialize nffs's internal state. */
+    rc = nffs_init();
+    SYSINIT_PANIC_ASSERT(rc == 0);
+
+    /* Convert the set of flash blocks we intend to use for nffs into an array
+     * of nffs area descriptors.
+     */
+    cnt = NFFS_AREA_MAX;
+    rc = nffs_misc_desc_from_flash_area(
+        MYNEWT_VAL(NFFS_FLASH_AREA), &cnt, descs);
+    SYSINIT_PANIC_ASSERT(rc == 0);
+
+    /* Attempt to restore an existing nffs file system from flash. */
+    rc = nffs_detect(descs);
+    switch (rc) {
+    case 0:
+        break;
+
+    case FS_ECORRUPT:
+        /* No valid nffs instance detected; act based on configued detection
+         * failure policy.
+         */
+        switch (MYNEWT_VAL(NFFS_DETECT_FAIL)) {
+        case NFFS_DETECT_FAIL_IGNORE:
+            break;
+
+        case NFFS_DETECT_FAIL_FORMAT:
+            rc = nffs_format(descs);
+            SYSINIT_PANIC_ASSERT(rc == 0);
+            break;
+
+        default:
+            SYSINIT_PANIC();
+            break;
+        }
+        break;
+
+    default:
+        SYSINIT_PANIC();
+        break;
+    }
 }

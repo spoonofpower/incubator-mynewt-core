@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -28,7 +28,7 @@ fsutil_read_file(const char *path, uint32_t offset, uint32_t len, void *dst,
 
     rc = fs_open(path, FS_ACCESS_READ, &file);
     if (rc != 0) {
-        goto done;
+        return rc;
     }
 
     rc = fs_read(file, len, dst, out_len);
@@ -49,9 +49,9 @@ fsutil_write_file(const char *path, const void *data, uint32_t len)
     struct fs_file *file;
     int rc;
 
-    rc = fs_open(path, FS_ACCESS_WRITE | FS_ACCESS_TRUNCATE, &file);
+    rc = fs_open(path, FS_ACCESS_WRITE, &file);
     if (rc != 0) {
-        goto done;
+        return rc;
     }
 
     rc = fs_write(file, data, len);

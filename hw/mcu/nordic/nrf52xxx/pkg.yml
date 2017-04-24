@@ -25,6 +25,7 @@ pkg.keywords:
     - nrf52
 
 pkg.deps: 
-    - hw/hal 
-    - libs/cmsis-core 
+    - hw/mcu/nordic
     - compiler/arm-none-eabi-m4
+    - hw/cmsis-core 
+    - hw/hal 

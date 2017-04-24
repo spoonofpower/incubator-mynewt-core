@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -35,6 +35,7 @@ nffs_format_from_scratch_area(uint8_t area_idx, uint8_t area_id)
     int rc;
 
     assert(area_idx < nffs_num_areas);
+    STATS_INC(nffs_stats, nffs_readcnt_format);
     rc = nffs_flash_read(area_idx, 0, &disk_area, sizeof disk_area);
     if (rc != 0) {
         return rc;
@@ -177,6 +178,8 @@ nffs_format_full(const struct nffs_area_desc *area_descs)
     if (rc != 0) {
         goto err;
     }
+
+    nffs_current_area_descs = (struct nffs_area_desc*) area_descs;
 
     return 0;
 

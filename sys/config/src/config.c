@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -20,44 +20,48 @@
 #include <string.h>
 #include <stdio.h>
 
-#include <os/os.h>
+#include "sysinit/sysinit.h"
+#include "syscfg/syscfg.h"
+#include "os/os.h"
+#include "base64/base64.h"
 
 #include "config/config.h"
 #include "config_priv.h"
 
-static SLIST_HEAD(, conf_handler) conf_handlers =
-    SLIST_HEAD_INITIALIZER(&conf_handlers);
+struct conf_handler_head conf_handlers;
 
-int
+static uint8_t conf_cmd_inited;
+
+void
 conf_init(void)
 {
-    int rc = 0;
+    int rc;
 
-#ifdef SHELL_PRESENT
+    SLIST_INIT(&conf_handlers);
+    conf_store_init();
+
+    if (conf_cmd_inited) {
+        return;
+    }
+
+    (void)rc;
+
+#if MYNEWT_VAL(CONFIG_CLI)
     rc = conf_cli_register();
+    SYSINIT_PANIC_ASSERT(rc == 0);
 #endif
-#ifdef NEWTMGR_PRESENT
+#if MYNEWT_VAL(CONFIG_NEWTMGR)
     rc = conf_nmgr_register();
+    SYSINIT_PANIC_ASSERT(rc == 0);
 #endif
-    return rc;
+
+    conf_cmd_inited = 1;
 }
 
 int
 conf_register(struct conf_handler *handler)
 {
     SLIST_INSERT_HEAD(&conf_handlers, handler, ch_list);
-    return 0;
-}
-
-int
-conf_load(void)
-{
-    /*
-     * for every config source
-     *    load config
-     *    apply config
-     *    commit all
-     */
     return 0;
 }
 
@@ -118,15 +122,28 @@ conf_value_from_str(char *val_str, enum conf_type type, void *vp, int maxlen)
     int32_t val;
     char *eptr;
 
+    if (!val_str) {
+        goto err;
+    }
     switch (type) {
     case CONF_INT8:
     case CONF_INT16:
     case CONF_INT32:
-        val = strtol(val_str, &eptr, 0);
-        if (*eptr != '\0') {
-            goto err;
+    case CONF_BOOL:
+        if (val_str) {
+            val = strtol(val_str, &eptr, 0);
+            if (*eptr != '\0') {
+                goto err;
+            }
+        } else {
+            val = 0;
         }
-        if (type == CONF_INT8) {
+        if (type == CONF_BOOL) {
+            if (val < 0 || val > 1) {
+                goto err;
+            }
+            *(bool *)vp = val;
+        } else if (type == CONF_INT8) {
             if (val < INT8_MIN || val > UINT8_MAX) {
                 goto err;
             }
@@ -155,6 +172,22 @@ err:
     return OS_INVALID_PARM;
 }
 
+int
+conf_bytes_from_str(char *val_str, void *vp, int *len)
+{
+    int tmp;
+
+    if (base64_decode_len(val_str) > *len) {
+        return OS_INVALID_PARM;
+    }
+    tmp = base64_decode(val_str, vp);
+    if (tmp < 0) {
+        return OS_INVALID_PARM;
+    }
+    *len = tmp;
+    return 0;
+}
+
 char *
 conf_str_from_value(enum conf_type type, void *vp, char *buf, int buf_len)
 {
@@ -167,7 +200,10 @@ conf_str_from_value(enum conf_type type, void *vp, char *buf, int buf_len)
     case CONF_INT8:
     case CONF_INT16:
     case CONF_INT32:
-        if (type == CONF_INT8) {
+    case CONF_BOOL:
+        if (type == CONF_BOOL) {
+            val = *(bool *)vp;
+        } else if (type == CONF_INT8) {
             val = *(int8_t *)vp;
         } else if (type == CONF_INT16) {
             val = *(int16_t *)vp;
@@ -179,6 +215,16 @@ conf_str_from_value(enum conf_type type, void *vp, char *buf, int buf_len)
     default:
         return NULL;
     }
+}
+
+char *
+conf_str_from_bytes(void *vp, int vp_len, char *buf, int buf_len)
+{
+    if (BASE64_ENCODE_SIZE(vp_len) > buf_len) {
+        return NULL;
+    }
+    base64_encode(vp, vp_len, buf, 1);
+    return buf;
 }
 
 int
@@ -224,6 +270,7 @@ conf_commit(char *name)
     char *name_argv[CONF_MAX_DIR_DEPTH];
     struct conf_handler *ch;
     int rc;
+    int rc2;
 
     if (name) {
         ch = conf_parse_and_lookup(name, &name_argc, name_argv);
@@ -236,14 +283,15 @@ conf_commit(char *name)
             return 0;
         }
     } else {
+        rc = 0;
         SLIST_FOREACH(ch, &conf_handlers, ch_list) {
             if (ch->ch_commit) {
-                rc = ch->ch_commit();
-                if (rc) {
-                    return rc;
+                rc2 = ch->ch_commit();
+                if (!rc) {
+                    rc = rc2;
                 }
             }
         }
-        return 0;
+        return rc;
     }
 }

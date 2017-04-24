@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -18,10 +18,12 @@
  */
 
 #include <assert.h>
+#include "flash_map/flash_map.h"
+#include "hal/hal_bsp.h"
+#include "hal/hal_flash_int.h"
 #include "os/os_malloc.h"
 #include "nffs/nffs.h"
 #include "nffs_priv.h"
-#include "crc16.h"
 
 /**
  * Determines if the file system contains a valid root directory.  For the root
@@ -49,7 +51,10 @@ nffs_misc_validate_root_dir(void)
     }
 
     rc = nffs_inode_from_entry(&inode, nffs_root_dir);
-    if (rc != 0) {
+    /*
+     * nffs_root_dir is automatically flagged a "dummy" inode but it's special
+     */
+    if (rc != 0 && rc != FS_ENOENT) {
         return rc;
     }
 
@@ -87,6 +92,77 @@ nffs_misc_validate_scratch(void)
     }
 
     return 0;
+}
+
+/**
+ * Performs a garbage cycle to free up memory, if necessary.  This function
+ * should be called repeatedly until either:
+ *   o The subsequent allocation is successful, or
+ *   o Garbage collection is not successfully performed (indicated by a return
+ *     code other than FS_EAGAIN).
+ *
+ * This function determines if garbage collection is necessary by inspecting
+ * the value of the supplied "resource" parameter.  If resource is null, that
+ * implies that allocation failed.
+ *
+ * This function will not initiate garbage collection if all areas have already
+ * been collected in an attempt to free memory for the allocation in question.
+ *
+ * @param resource              The result of the allocation attempt; null
+ *                                  implies that garbage collection is
+ *                                  necessary.
+ * @param out_rc                The status of this operation gets written here.
+ *                                   0: garbage collection was successful or
+ *                                       unnecessary.
+ *                                   FS_EFULL: Garbage collection was not
+ *                                       performed because all areas have
+ *                                       already been collected.
+ *                                   Other nonzero: garbage collection failed.
+ *
+ * @return                      FS_EAGAIN if garbage collection was
+ *                                  successfully performed and the allocation
+ *                                  should be retried;
+ *                              Other value if the allocation should not be
+ *                                  retried; the value of the out_rc parameter
+ *                                  indicates whether allocation was successful
+ *                                  or there was an error.
+ */
+int
+nffs_misc_gc_if_oom(void *resource, int *out_rc)
+{
+    /**
+     * Keeps track of the number of repeated garbage collection cycles.
+     * Necessary for ensuring GC stops after all areas have been collected.
+     */
+    static uint8_t total_gc_cycles;
+
+    if (resource != NULL) {
+        /* Allocation succeeded.  Reset cycle count in preparation for the next
+         * allocation failure.
+         */
+        total_gc_cycles = 0;
+        *out_rc = 0;
+        return 0;
+    }
+
+    /* If every area has already been garbage collected, there is nothing else
+     * that can be done ("- 1" to account for the scratch area).
+     */
+    if (total_gc_cycles >= nffs_num_areas - 1) {
+        *out_rc = FS_ENOMEM;
+        return 0;
+    }
+
+    /* Attempt a garbage collection on the next area. */
+    *out_rc = nffs_gc(NULL);
+    total_gc_cycles++;
+    STATS_INC(nffs_stats, nffs_gccnt);
+    if (*out_rc != 0) {
+        return 0;
+    }
+
+    /* Indicate that garbage collection was successfully performed. */
+    return 1;
 }
 
 /**
@@ -364,4 +440,72 @@ int
 nffs_misc_ready(void)
 {
     return nffs_root_dir != NULL;
+}
+
+
+/*
+ * Turn flash region into a set of areas for NFFS use.
+ *
+ * Limit the number of regions we return to be less than *cnt.
+ * If sector count within region exceeds that, collect multiple sectors
+ * to a region.
+ */
+int
+nffs_misc_desc_from_flash_area(int id, int *cnt, struct nffs_area_desc *nad)
+{
+    int i, j;
+    const struct hal_flash *hf;
+    const struct flash_area *fa;
+    int max_cnt, move_on;
+    int first_idx, last_idx;
+    uint32_t start, size;
+    uint32_t min_size;
+    int rc;
+
+    first_idx = last_idx = -1;
+    max_cnt = *cnt;
+    *cnt = 0;
+
+    rc = flash_area_open(id, &fa);
+    if (rc != 0) {
+        return -1;
+    }
+
+    hf = hal_bsp_flash_dev(fa->fa_device_id);
+    for (i = 0; i < hf->hf_sector_cnt; i++) {
+        hf->hf_itf->hff_sector_info(hf, i, &start, &size);
+        if (start >= fa->fa_off && start < fa->fa_off + fa->fa_size) {
+            if (first_idx == -1) {
+                first_idx = i;
+            }
+            last_idx = i;
+            *cnt = *cnt + 1;
+        }
+    }
+    if (*cnt > max_cnt) {
+        min_size = fa->fa_size / max_cnt;
+    } else {
+        min_size = 0;
+    }
+    *cnt = 0;
+
+    move_on = 1;
+    for (i = first_idx, j = 0; i < last_idx + 1; i++) {
+        hf->hf_itf->hff_sector_info(hf, i, &start, &size);
+        if (move_on) {
+            nad[j].nad_flash_id = fa->fa_device_id;
+            nad[j].nad_offset = start;
+            nad[j].nad_length = size;
+            *cnt = *cnt + 1;
+            move_on = 0;
+        } else {
+            nad[j].nad_length += size;
+        }
+        if (nad[j].nad_length >= min_size) {
+            j++;
+            move_on = 1;
+        }
+    }
+    nad[*cnt].nad_length = 0;
+    return 0;
 }

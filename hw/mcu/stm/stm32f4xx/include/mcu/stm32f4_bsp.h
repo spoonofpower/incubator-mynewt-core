@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -19,6 +19,10 @@
 
 #ifndef __MCU_STM32F4_BSP_H_
 #define __MCU_STM32F4_BSP_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * BSP specific UART settings.
@@ -35,14 +39,17 @@ struct stm32f4_uart_cfg {
     IRQn_Type suc_irqn;				/* NVIC IRQn */
 };
 
-const struct stm32f4_uart_cfg *bsp_uart_config(int port);
-
 /*
  * Internal API for stm32f4xx mcu specific code.
  */
-int hal_gpio_init_af(int pin, uint8_t af_type, enum gpio_pull pull);
+int hal_gpio_init_af(int pin, uint8_t af_type, enum hal_gpio_pull pull, uint8_t
+od);
 
 struct hal_flash;
 extern struct hal_flash stm32f4_flash_dev;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __MCU_STM32F4_BSP_H_ */

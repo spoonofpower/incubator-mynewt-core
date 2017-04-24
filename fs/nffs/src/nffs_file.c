@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,6 +21,9 @@
 #include <string.h>
 #include "nffs_priv.h"
 #include "nffs/nffs.h"
+#include "fs/fs_if.h"
+
+struct fs_ops nffs_ops;
 
 static struct nffs_file *
 nffs_file_alloc(void)
@@ -75,9 +78,8 @@ nffs_file_new(struct nffs_inode_entry *parent, const char *filename,
     uint8_t area_idx;
     int rc;
 
-    inode_entry = nffs_inode_entry_alloc();
-    if (inode_entry == NULL) {
-        rc = FS_ENOMEM;
+    rc = nffs_inode_entry_reserve(&inode_entry);
+    if (rc != 0) {
         goto err;
     }
 
@@ -87,20 +89,21 @@ nffs_file_new(struct nffs_inode_entry *parent, const char *filename,
         goto err;
     }
 
-    memset(&disk_inode, 0xff, sizeof disk_inode);
-    disk_inode.ndi_magic = NFFS_INODE_MAGIC;
+    memset(&disk_inode, 0, sizeof disk_inode);
     if (is_dir) {
         disk_inode.ndi_id = nffs_hash_next_dir_id++;
     } else {
         disk_inode.ndi_id = nffs_hash_next_file_id++;
     }
     disk_inode.ndi_seq = 0;
+    disk_inode.ndi_lastblock_id = NFFS_ID_NONE;
     if (parent == NULL) {
         disk_inode.ndi_parent_id = NFFS_ID_NONE;
     } else {
         disk_inode.ndi_parent_id = parent->nie_hash_entry.nhe_id;
     }
     disk_inode.ndi_filename_len = filename_len;
+    disk_inode.ndi_flags = 0;
     nffs_crc_disk_inode_fill(&disk_inode, filename);
 
     rc = nffs_inode_write_disk(&disk_inode, filename, area_idx, offset);
@@ -112,6 +115,7 @@ nffs_file_new(struct nffs_inode_entry *parent, const char *filename,
     inode_entry->nie_hash_entry.nhe_flash_loc =
         nffs_flash_loc(area_idx, offset);
     inode_entry->nie_refcnt = 1;
+    inode_entry->nie_last_block_entry = NULL;
 
     if (parent != NULL) {
         rc = nffs_inode_add_child(parent, inode_entry);
@@ -120,6 +124,7 @@ nffs_file_new(struct nffs_inode_entry *parent, const char *filename,
         }
     } else {
         assert(disk_inode.ndi_id == NFFS_ID_ROOT_DIR);
+        nffs_inode_setflags(inode_entry, NFFS_INODE_FLAG_INTREE);
     }
 
     nffs_hash_insert(&inode_entry->nie_hash_entry);
@@ -238,8 +243,9 @@ nffs_file_open(struct nffs_file **out_file, const char *path,
     } else {
         file->nf_offset = 0;
     }
-    file->nf_inode_entry->nie_refcnt++;
+    nffs_inode_inc_refcnt(file->nf_inode_entry);
     file->nf_access_flags = access_flags;
+    file->fops = &nffs_ops;
 
     *out_file = file;
 

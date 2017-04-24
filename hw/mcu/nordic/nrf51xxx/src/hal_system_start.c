@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <inttypes.h>
 #include <mcu/cortex_m0.h>
+#include <mcu/nrf51_hal.h>
 
 /**
  * Boots the image described by the supplied image header.
@@ -27,7 +28,7 @@
  * @param hdr                   The header for the image to boot.
  */
 void
-system_start(void *img_start)
+hal_system_start(void *img_start)
 {
     typedef void jump_fn(void);
 
@@ -45,4 +46,30 @@ system_start(void *img_start)
 
     /* Jump to image. */
     fn();
+}
+
+/**
+ * Boots the image described by the supplied image header.
+ * This routine is used in split-app scenario when loader decides
+ * that it wants to run the app instead.
+ *
+ * @param hdr                   The header for the image to boot.
+ */
+void
+hal_system_restart(void *img_start)
+{
+    int i;
+    int sr;
+
+    /*
+     * Disable interrupts, and leave the disabled.
+     * They get re-enabled when system starts coming back again.
+     */
+    __HAL_DISABLE_INTERRUPTS(sr);
+    for (i = 0; i < sizeof(NVIC->ICER) / sizeof(NVIC->ICER[0]); i++) {
+        NVIC->ICER[i] = 0xffffffff;
+    }
+    (void)sr;
+
+    hal_system_start(img_start);
 }

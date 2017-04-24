@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -20,7 +20,11 @@
 #ifndef H_BLE_LL_CTRL_
 #define H_BLE_LL_CTRL_
 
-/* 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
  * LL control procedures. This "enumeration" is not in the specification;
  * It is used to determine which LL control procedure is currently running
  * in a connection and which ones may be pending.
@@ -32,7 +36,7 @@
 #define BLE_LL_CTRL_PROC_VERSION_XCHG   (4)
 #define BLE_LL_CTRL_PROC_TERMINATE      (5)
 #define BLE_LL_CTRL_PROC_CONN_PARAM_REQ (6)
-#define BLE_LL_CRTL_PROC_LE_PING        (7)
+#define BLE_LL_CTRL_PROC_LE_PING        (7)
 #define BLE_LL_CTRL_PROC_DATA_LEN_UPD   (8)
 #define BLE_LL_CTRL_PROC_NUM            (9)
 #define BLE_LL_CTRL_PROC_IDLE           (255)
@@ -44,7 +48,7 @@
 /* LL control procedure timeout */
 #define BLE_LL_CTRL_PROC_TIMEOUT        (40)    /* in secs */
 
-/* 
+/*
  * LL CTRL PDU format
  *  -> Opcode   (1 byte)
  *  -> Data     (0 - 26 bytes)
@@ -101,9 +105,9 @@ struct ble_ll_chan_map_req
 };
 #define BLE_LL_CTRL_CHAN_MAP_LEN            (7)
 
-/* 
+/*
  * LL control terminate ind
- *  -> error code (1 byte)                         
+ *  -> error code (1 byte)
  */
 #define BLE_LL_CTRL_TERMINATE_IND_LEN      (1)
 
@@ -127,26 +131,20 @@ struct ble_ll_enc_rsp
 
 #define BLE_LL_CTRL_ENC_RSP_LEN             (12)
 
-/* LL control start enc req and start enc rsp have no data */ 
-#define BLE_LL_CTRL_START_ENC_LEN           (0)
-
-/* 
+/*
  * LL control unknown response
  *  -> 1 byte which contains the unknown or un-supported opcode.
  */
 #define BLE_LL_CTRL_UNK_RSP_LEN             (1)
 
 /*
- * LL control feature req and LL control feature rsp 
+ * LL control feature req and LL control feature rsp
  *  -> 8 bytes of data containing features supported by device.
  */
 #define BLE_LL_CTRL_FEATURE_LEN             (8)
 
-/* LL control pause enc req and pause enc rsp have no data */
-#define BLE_LL_CTRL_PAUSE_ENC_LEN           (0)
-
-/* 
- * LL control version ind 
+/*
+ * LL control version ind
  *  -> version (1 byte):
  *      Contains the version number of the bluetooth controller specification.
  *  -> comp_id (2 bytes)
@@ -163,7 +161,7 @@ struct ble_ll_version_ind
 
 #define BLE_LL_CTRL_VERSION_IND_LEN         (5)
 
-/* 
+/*
  * LL control reject ind
  *  -> error code (1 byte): contains reason why request was rejected.
  */
@@ -206,7 +204,7 @@ struct ble_ll_reject_ind_ext
 /* LL control ping req and ping rsp (contain no data) */
 #define BLE_LL_CTRL_PING_LEN            (0)
 
-/* 
+/*
  * LL control length req and length rsp
  *  -> max_rx_bytes (2 bytes): defines connMaxRxOctets. Range 27 to 251
  *  -> max_rx_time (2 bytes): defines connMaxRxTime. Range 328 to 2120 usecs.
@@ -231,19 +229,33 @@ int ble_ll_ctrl_rx_pdu(struct ble_ll_conn_sm *connsm, struct os_mbuf *om);
 void ble_ll_ctrl_chk_proc_start(struct ble_ll_conn_sm *connsm);
 void ble_ll_ctrl_terminate_start(struct ble_ll_conn_sm *connsm);
 int ble_ll_ctrl_is_terminate_ind(uint8_t hdr, uint8_t opcode);
-int ble_ll_ctrl_is_reject_ind_ext(uint8_t hdr, uint8_t opcode);
-uint8_t ble_ll_ctrl_conn_param_reply(struct ble_ll_conn_sm *connsm, 
+uint8_t ble_ll_ctrl_conn_param_reply(struct ble_ll_conn_sm *connsm,
                                      uint8_t *rsp,
                                      struct ble_ll_conn_params *req);
-int ble_ll_ctrl_reject_ind_ext_send(struct ble_ll_conn_sm *connsm,
-                                    uint8_t rej_opcode, uint8_t err);
+int ble_ll_ctrl_reject_ind_send(struct ble_ll_conn_sm *connsm,
+                                uint8_t rej_opcode, uint8_t err);
+int ble_ll_ctrl_start_enc_send(struct ble_ll_conn_sm *connsm, uint8_t opcode);
+int ble_ll_ctrl_enc_allowed_pdu(struct os_mbuf_pkthdr *pkthdr);
+int ble_ll_ctrl_tx_done(struct os_mbuf *txpdu, struct ble_ll_conn_sm *connsm);
+int ble_ll_ctrl_is_start_enc_rsp(struct os_mbuf *txpdu);
 
 void ble_ll_hci_ev_datalen_chg(struct ble_ll_conn_sm *connsm);
 void ble_ll_hci_ev_rem_conn_parm_req(struct ble_ll_conn_sm *connsm,
                                      struct ble_ll_conn_params *cp);
 void ble_ll_hci_ev_conn_update(struct ble_ll_conn_sm *connsm, uint8_t status);
-void ble_ll_hci_ev_rd_rem_used_feat(struct ble_ll_conn_sm *connsm, 
+void ble_ll_hci_ev_rd_rem_used_feat(struct ble_ll_conn_sm *connsm,
                                       uint8_t status);
 void ble_ll_hci_ev_rd_rem_ver(struct ble_ll_conn_sm *connsm, uint8_t status);
+void ble_ll_hci_ev_encrypt_chg(struct ble_ll_conn_sm *connsm, uint8_t status);
+int ble_ll_hci_ev_ltk_req(struct ble_ll_conn_sm *connsm);
+int ble_ll_hci_ev_hw_err(uint8_t hw_err);
+void ble_ll_hci_ev_databuf_overflow(void);
+
+
+void ble_ll_calc_session_key(struct ble_ll_conn_sm *connsm);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* H_BLE_LL_CTRL_ */

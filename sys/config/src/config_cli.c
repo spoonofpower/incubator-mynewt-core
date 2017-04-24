@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -19,10 +19,11 @@
 
 #include <stddef.h>
 
+#include "syscfg/syscfg.h"
 #include "config/config.h"
 #include "config_priv.h"
 
-#ifdef SHELL_PRESENT
+#if MYNEWT_VAL(CONFIG_CLI)
 #include <string.h>
 
 #include <shell/shell.h>
@@ -35,12 +36,46 @@ static struct shell_cmd shell_conf_cmd = {
     .sc_cmd_func = shell_conf_command
 };
 
+static void
+conf_running_one(char *name, char *val)
+{
+    console_printf("%s = %s\n", name, val ? val : "<del>");
+}
+
+static void
+conf_dump_running(void)
+{
+    struct conf_handler *ch;
+
+    SLIST_FOREACH(ch, &conf_handlers, ch_list) {
+        if (ch->ch_export) {
+            ch->ch_export(conf_running_one, CONF_EXPORT_SHOW);
+        }
+    }
+}
+
+static void
+conf_saved_one(char *name, char *val, void *cb_arg)
+{
+    console_printf("%s = %s\n", name, val ? val : "<del>");
+}
+
+static void
+conf_dump_saved(void)
+{
+    struct conf_store *cs;
+
+    SLIST_FOREACH(cs, &conf_load_srcs, cs_next) {
+        cs->cs_itf->csi_load(cs, conf_saved_one, NULL);
+    }
+}
+
 static int
 shell_conf_command(int argc, char **argv)
 {
     char *name = NULL;
     char *val = NULL;
-    char tmp_buf[16];
+    char tmp_buf[CONF_MAX_VAL_LEN + 1];
     int rc;
 
     switch (argc) {
@@ -63,6 +98,17 @@ shell_conf_command(int argc, char **argv)
             val = "Done\n";
         }
         console_printf("%s", val);
+        return 0;
+    } else if (!strcmp(name, "dump")) {
+        if (!val || !strcmp(val, "running")) {
+            conf_dump_running();
+        }
+        if (val && !strcmp(val, "saved")) {
+            conf_dump_saved();
+        }
+        return 0;
+    } else if (!strcmp(name, "save")) {
+        conf_save();
         return 0;
     }
     if (!val) {

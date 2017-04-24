@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,6 +22,10 @@
 
 #include <stddef.h>
 #include <inttypes.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * Common interface to access files.
@@ -74,5 +78,13 @@ int fs_dirent_is_dir(const struct fs_dirent *);
 #define FS_EEXIST       11  /* File or directory already exists */
 #define FS_EACCESS      12  /* Operation prohibited by file open mode */
 #define FS_EUNINIT      13  /* File system not initialized */
+
+#define FS_NMGR_ID_FILE     0
+
+#define FS_NMGR_MAX_NAME    64
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

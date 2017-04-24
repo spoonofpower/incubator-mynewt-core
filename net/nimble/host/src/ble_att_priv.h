@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -24,6 +24,11 @@
 #include "stats/stats.h"
 #include "os/queue.h"
 #include "host/ble_att.h"
+#include "host/ble_uuid.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct os_mbuf;
 struct ble_hs_conn;
 struct ble_l2cap_chan;
@@ -100,10 +105,6 @@ STATS_SECT_START(ble_att_stats)
 STATS_SECT_END
 extern STATS_SECT_DECL(ble_att_stats) ble_att_stats;
 
-#define BLE_ATT_MTU_DFLT                23  /* Also the minimum. */
-#define BLE_ATT_MTU_MAX                 240
-#define BLE_ATT_MTU_PREFERRED_DFLT      240
-
 struct ble_att_prep_entry {
     SLIST_ENTRY(ble_att_prep_entry) bape_next;
     uint16_t bape_handle;
@@ -115,64 +116,78 @@ struct ble_att_prep_entry {
     struct os_mbuf *bape_value;
 };
 
+SLIST_HEAD(ble_att_prep_entry_list, ble_att_prep_entry);
+
 struct ble_att_svr_conn {
     /** This list is sorted by attribute handle ID. */
-    SLIST_HEAD(, ble_att_prep_entry) basc_prep_list;
-    uint32_t basc_prep_write_rx_time;
+    struct ble_att_prep_entry_list basc_prep_list;
+    os_time_t basc_prep_timeout_at;
 };
+
+/**
+ * Handles a host attribute request.
+ *
+ * @param entry                 The host attribute being requested.
+ * @param op                    The operation being performed on the attribute.
+ * @param arg                   The request data associated with that host
+ *                                  attribute.
+ *
+ * @return                      0 on success;
+ *                              One of the BLE_ATT_ERR_[...] codes on
+ *                                  failure.
+ */
+typedef int ble_att_svr_access_fn(uint16_t conn_handle, uint16_t attr_handle,
+                                  uint8_t op, uint16_t offset,
+                                  struct os_mbuf **om, void *arg);
+
+int ble_att_svr_register(const ble_uuid_t *uuid, uint8_t flags,
+                         uint8_t min_key_size, uint16_t *handle_id,
+                         ble_att_svr_access_fn *cb, void *cb_arg);
 
 struct ble_att_svr_entry {
     STAILQ_ENTRY(ble_att_svr_entry) ha_next;
 
-    uint8_t ha_uuid[16];
+    const ble_uuid_t *ha_uuid;
     uint8_t ha_flags;
-    uint8_t ha_pad1;
+    uint8_t ha_min_key_size;
     uint16_t ha_handle_id;
     ble_att_svr_access_fn *ha_cb;
     void *ha_cb_arg;
 };
 
-/**
- * Called from ble_att_svr_walk().  Called on each entry in the 
- * ble_att_svr_list.
- *
- * @param Contains the current ble_att being iterated through
- * @param The user supplied argument to ble_att_svr_walk()
- *
- * @return 0 on continue, 1 on stop
- */
-typedef int (*ble_att_svr_walk_func_t)(struct ble_att_svr_entry *entry,
-                                       void *arg);
-
-
-#define HA_OPCODE_METHOD_START (0)
-#define HA_OPCODE_METHOD_END (5)
-#define HA_OPCODE_COMMAND_FLAG (1 << 6) 
-#define HA_OPCODE_AUTH_SIG_FLAG (1 << 7) 
-
 SLIST_HEAD(ble_att_clt_entry_list, ble_att_clt_entry);
 
 /*** @gen */
 
-extern uint8_t ble_att_flat_buf[BLE_ATT_ATTR_MAX_LEN];
-
-struct ble_l2cap_chan *ble_att_create_chan(void);
+struct ble_l2cap_chan *ble_att_create_chan(uint16_t conn_handle);
 int ble_att_conn_chan_find(uint16_t conn_handle, struct ble_hs_conn **out_conn,
                            struct ble_l2cap_chan **out_chan);
 void ble_att_inc_tx_stat(uint8_t att_op);
-uint16_t ble_att_mtu(uint16_t conn_handle);
+void ble_att_truncate_to_mtu(const struct ble_l2cap_chan *att_chan,
+                             struct os_mbuf *txom);
 void ble_att_set_peer_mtu(struct ble_l2cap_chan *chan, uint16_t peer_mtu);
+uint16_t ble_att_chan_mtu(const struct ble_l2cap_chan *chan);
 int ble_att_init(void);
 
+#define BLE_ATT_LOG_CMD(is_tx, cmd_name, conn_handle, log_cb, cmd) \
+    BLE_HS_LOG_CMD((is_tx), "att", (cmd_name), (conn_handle), (log_cb), (cmd))
+
+#define BLE_ATT_LOG_EMPTY_CMD(is_tx, cmd_name, conn_handle) \
+    BLE_HS_LOG_EMPTY_CMD((is_tx), "att", (cmd_name), (conn_handle))
 
 /*** @svr */
 
-extern ble_att_svr_notify_fn *ble_att_svr_notify_cb;
-extern void *ble_att_svr_notify_cb_arg;
+int ble_att_svr_start(void);
 
-int ble_att_svr_find_by_uuid(uint8_t *uuid, struct ble_att_svr_entry **ha_ptr);
+struct ble_att_svr_entry *
+ble_att_svr_find_by_uuid(struct ble_att_svr_entry *start_at,
+                         const ble_uuid_t *uuid,
+                         uint16_t end_handle);
 uint16_t ble_att_svr_prev_handle(void);
-int ble_att_svr_rx_mtu(uint16_t conn_handle, struct os_mbuf **om);
+int ble_att_svr_rx_mtu(uint16_t conn_handle, struct os_mbuf **rxom);
+struct ble_att_svr_entry *ble_att_svr_find_by_handle(uint16_t handle_id);
+int32_t ble_att_svr_ticks_until_tmo(const struct ble_att_svr_conn *svr,
+                                    os_time_t now);
 int ble_att_svr_rx_find_info(uint16_t conn_handle, struct os_mbuf **rxom);
 int ble_att_svr_rx_find_type_value(uint16_t conn_handle,
                                    struct os_mbuf **rxom);
@@ -197,9 +212,9 @@ int ble_att_svr_rx_notify(uint16_t conn_handle,
                           struct os_mbuf **rxom);
 int ble_att_svr_rx_indicate(uint16_t conn_handle,
                             struct os_mbuf **rxom);
-void ble_att_svr_prep_clear(struct ble_att_svr_conn *basc);
+void ble_att_svr_prep_clear(struct ble_att_prep_entry_list *prep_list);
 int ble_att_svr_read_handle(uint16_t conn_handle, uint16_t attr_handle,
-                            struct ble_att_svr_access_ctxt *ctxt,
+                            uint16_t offset, struct os_mbuf *om,
                             uint8_t *out_att_err);
 int ble_att_svr_init(void);
 
@@ -209,7 +224,7 @@ int ble_att_svr_init(void);
 /** An information-data entry in a find information response. */
 struct ble_att_find_info_idata {
     uint16_t attr_handle;
-    uint8_t uuid128[16];
+    ble_uuid_any_t uuid;
 };
 
 /** A handles-information entry in a find by type value response. */
@@ -223,6 +238,7 @@ struct ble_att_read_type_adata {
     uint16_t att_handle;
     int value_len;
     uint8_t *value;
+
 };
 
 /** An attribute-data entry in a read by group type response. */
@@ -234,53 +250,50 @@ struct ble_att_read_group_type_adata {
 };
 
 int ble_att_clt_rx_error(uint16_t conn_handle, struct os_mbuf **rxom);
-int ble_att_clt_tx_mtu(uint16_t conn_handle, struct ble_att_mtu_cmd *req);
+int ble_att_clt_tx_mtu(uint16_t conn_handle, uint16_t mtu);
 int ble_att_clt_rx_mtu(uint16_t conn_handle, struct os_mbuf **rxom);
-int ble_att_clt_tx_read(uint16_t conn_handle, struct ble_att_read_req *req);
+int ble_att_clt_tx_read(uint16_t conn_handle, uint16_t handle);
 int ble_att_clt_rx_read(uint16_t conn_handle, struct os_mbuf **rxom);
-int ble_att_clt_tx_read_blob(uint16_t conn_handle,
-                             struct ble_att_read_blob_req *req);
+int ble_att_clt_tx_read_blob(uint16_t conn_handle, uint16_t handle,
+                             uint16_t offset);
 int ble_att_clt_rx_read_blob(uint16_t conn_handle, struct os_mbuf **rxom);
 int ble_att_clt_tx_read_mult(uint16_t conn_handle,
-                             uint16_t *handles, int num_handles);
+                             const uint16_t *handles, int num_handles);
 int ble_att_clt_rx_read_mult(uint16_t conn_handle, struct os_mbuf **rxom);
-int ble_att_clt_tx_read_type(uint16_t conn_handle,
-                             struct ble_att_read_type_req *req,
-                             void *uuid128);
+int ble_att_clt_tx_read_type(uint16_t conn_handle, uint16_t start_handle,
+                             uint16_t end_handle, const ble_uuid_t *uuid);
 int ble_att_clt_rx_read_type(uint16_t conn_handle, struct os_mbuf **rxom);
 int ble_att_clt_tx_read_group_type(uint16_t conn_handle,
-                                   struct ble_att_read_group_type_req *req,
-                                   void *uuid128);
+                                   uint16_t start_handle, uint16_t end_handle,
+                                   const ble_uuid_t *uuid128);
 int ble_att_clt_rx_read_group_type(uint16_t conn_handle,
                                    struct os_mbuf **rxom);
-int ble_att_clt_tx_find_info(uint16_t conn_handle,
-                             struct ble_att_find_info_req *req);
-int ble_att_clt_rx_find_info(uint16_t conn_handle, struct os_mbuf **om);
-int ble_att_clt_tx_find_type_value(uint16_t conn_handle,
-                                   struct ble_att_find_type_value_req *req,
-                                   void *attribute_value, int value_len);
+int ble_att_clt_tx_find_info(uint16_t conn_handle, uint16_t start_handle,
+                             uint16_t end_handle);
+int ble_att_clt_rx_find_info(uint16_t conn_handle, struct os_mbuf **rxom);
+int ble_att_clt_tx_find_type_value(uint16_t conn_handle, uint16_t start_handle,
+                                   uint16_t end_handle, uint16_t attribute_type,
+                                   const void *attribute_value, int value_len);
 int ble_att_clt_rx_find_type_value(uint16_t conn_handle,
                                    struct os_mbuf **rxom);
-int ble_att_clt_tx_write_req(uint16_t conn_handle,
-                             struct ble_att_write_req *req,
-                             void *value, uint16_t value_len);
-int ble_att_clt_tx_write_cmd(uint16_t conn_handle,
-                             struct ble_att_write_req *req,
-                             void *value, uint16_t value_len);
-int ble_att_clt_tx_prep_write(uint16_t conn_handle,
-                              struct ble_att_prep_write_cmd *req,
-                              void *value, uint16_t value_len);
+int ble_att_clt_tx_write_req(uint16_t conn_handle, uint16_t handle,
+                             struct os_mbuf *txom);
+int ble_att_clt_tx_write_cmd(uint16_t conn_handle, uint16_t handle,
+                             struct os_mbuf *txom);
+int ble_att_clt_tx_prep_write(uint16_t conn_handle, uint16_t handle,
+                              uint16_t offset, struct os_mbuf *txom);
 int ble_att_clt_rx_prep_write(uint16_t conn_handle, struct os_mbuf **rxom);
-int ble_att_clt_tx_exec_write(uint16_t conn_handle,
-                              struct ble_att_exec_write_req *req);
+int ble_att_clt_tx_exec_write(uint16_t conn_handle, uint8_t flags);
 int ble_att_clt_rx_exec_write(uint16_t conn_handle, struct os_mbuf **rxom);
 int ble_att_clt_rx_write(uint16_t conn_handle, struct os_mbuf **rxom);
-int ble_att_clt_tx_notify(uint16_t conn_handle,
-                          struct ble_att_notify_req *req,
-                          void *value, uint16_t value_len);
-int ble_att_clt_tx_indicate(uint16_t conn_handle,
-                            struct ble_att_indicate_req *req,
-                            void *value, uint16_t value_len);
+int ble_att_clt_tx_notify(uint16_t conn_handle, uint16_t handle,
+                          struct os_mbuf *txom);
+int ble_att_clt_tx_indicate(uint16_t conn_handle, uint16_t handle,
+                            struct os_mbuf *txom);
 int ble_att_clt_rx_indicate(uint16_t conn_handle, struct os_mbuf **rxom);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

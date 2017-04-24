@@ -26,10 +26,16 @@ pkg.keywords:
     - filesystem
     - ffs
 
-pkg.features: NFFS
 pkg.deps:
     - fs/fs
+    - util/crc
     - hw/hal
-    - libs/os
-    - libs/testutil
-    - sys/log
+    - kernel/os
+    - test/testutil
+    - sys/flash_map
+pkg.req_apis:
+    - log
+    - stats
+
+pkg.init:
+    nffs_pkg_init: 200

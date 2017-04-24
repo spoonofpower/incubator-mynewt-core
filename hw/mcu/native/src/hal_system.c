@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,13 +20,25 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <assert.h>
+#include <getopt.h>
 
+#include "syscfg/syscfg.h"
 #include "hal/hal_system.h"
 #include "mcu/mcu_sim.h"
 
+#if MYNEWT_VAL(OS_SCHEDULING)
+#include <os/os.h>
+#endif
+
 void
-system_reset(void)
+hal_system_reset(void)
 {
+#if MYNEWT_VAL(SELFTEST)
+    /* Don't hang in the middle of a unit test. */
+    assert(0);
+#endif
+
     while(1);
 }
 
@@ -38,13 +50,18 @@ system_reset(void)
 static void
 usage(char *progname, int rc)
 {
-    const char msg[] =
-      "Usage: %s [-f flash_file] [-u uart_log_file]\n"
+    const char msg1[] = "Usage: ";
+    const char msg2[] =
+      "\n [-f flash_file][-u uart_log_file][--uart0 <file>][--uart1 <file>]\n"
       "     -f flash_file tells where binary flash file is located. It gets\n"
       "        created if it doesn't already exist.\n"
-      "     -u uart_log_file puts all UART data exchanges into a logfile.\n";
+      "     -u uart_log_file puts all UART data exchanges into a logfile.\n"
+      "     -uart0 uart0_file connects UART0 to character device uart0_file.\n"
+      "     -uart1 uart1_file connects UART1 to character device uart1_file.\n";
 
-    write(2, msg, strlen(msg));
+    write(2, msg1, strlen(msg1));
+    write(2, progname, strlen(progname));
+    write(2, msg2, strlen(msg2));
     exit(rc);
 }
 
@@ -52,9 +69,26 @@ void
 mcu_sim_parse_args(int argc, char **argv)
 {
     int ch;
-    char *progname = argv[0];
+    char *progname;
+    struct option options[] = {
+        { "flash",      required_argument,      0, 'f' },
+        { "uart_log",   required_argument,      0, 'u' },
+        { "help",       no_argument,            0, 'h' },
+        { "uart0",      required_argument,      0, 0 },
+        { "uart1",      required_argument,      0, 0 },
+        { NULL }
+    };
+    int opt_idx;
+    extern int main(int argc, char **arg);
 
-    while ((ch = getopt(argc, argv, "hf:u:")) != -1) {
+#if MYNEWT_VAL(OS_SCHEDULING)
+    if (g_os_started) {
+        return;
+    }
+#endif
+    progname = argv[0];
+    while ((ch = getopt_long(argc, argv, "hf:u:", options, &opt_idx)) !=
+            -1) {
         switch (ch) {
         case 'f':
             native_flash_file = optarg;
@@ -65,9 +99,35 @@ mcu_sim_parse_args(int argc, char **argv)
         case 'h':
             usage(progname, 0);
             break;
+        case 0:
+            switch (opt_idx) {
+            case 0:
+                native_flash_file = optarg;
+                break;
+            case 1:
+                native_uart_log_file = optarg;
+                break;
+            case 2:
+                usage(progname, 0);
+                break;
+            case 3:
+                native_uart_dev_strs[0] = optarg;
+                break;
+            case 4:
+                native_uart_dev_strs[1] = optarg;
+                break;
+            default:
+                usage(progname, -1);
+                break;
+            }
+            break;
         default:
             usage(progname, -1);
             break;
         }
     }
+#if MYNEWT_VAL(OS_SCHEDULING)
+    os_init(main);
+    os_start();
+#endif
 }

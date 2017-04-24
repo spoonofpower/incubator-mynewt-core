@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -23,97 +23,7 @@
 #include "console/console.h"
 #include "ble_hs_priv.h"
 
-int
-ble_hs_misc_malloc_mempool(void **mem, struct os_mempool *pool,
-                           int num_entries, int entry_size, char *name)
-{
-    int rc;
-
-    *mem = malloc(OS_MEMPOOL_BYTES(num_entries, entry_size));
-    if (*mem == NULL) {
-        return BLE_HS_ENOMEM;
-    }
-
-    rc = os_mempool_init(pool, num_entries, entry_size, *mem, name);
-    if (rc != 0) {
-        free(*mem);
-        return BLE_HS_EOS;
-    }
-
-    return 0;
-}
-
-void
-ble_hs_misc_log_mbuf(struct os_mbuf *om)
-{
-    uint8_t u8;
-    int i;
-
-    for (i = 0; i < OS_MBUF_PKTLEN(om); i++) {
-        os_mbuf_copydata(om, i, 1, &u8);
-        BLE_HS_LOG(DEBUG, "0x%02x ", u8);
-    }
-    BLE_HS_LOG(DEBUG, "\n");
-}
-
-void
-ble_hs_misc_log_flat_buf(void *data, int len)
-{
-    uint8_t *u8ptr;
-    int i;
-
-    u8ptr = data;
-    for (i = 0; i < len; i++) {
-        BLE_HS_LOG(DEBUG, "0x%02x ", u8ptr[i]);
-    }
-}
-
-void
-ble_hs_misc_assert_no_locks(void)
-{
-    if (os_started()) {
-        assert(!ble_hs_conn_locked_by_cur_task());
-        assert(!ble_gattc_locked_by_cur_task());
-        assert(!ble_gap_locked_by_cur_task());
-        assert(!ble_hci_sched_locked_by_cur_task());
-    }
-}
-
-/**
- * Allocates an mbuf for use by the nimble host.
- *
- * Lock restrictions: None.
- */
-struct os_mbuf *
-ble_hs_misc_pkthdr(void)
-{
-    struct os_mbuf *om;
-
-    om = os_msys_get_pkthdr(0, 0);
-    if (om == NULL) {
-        return NULL;
-    }
-
-    /* Make room in the buffer for various headers.  XXX Check this number. */
-    om->om_data += 8;
-
-    return om;
-}
-
-int
-ble_hs_misc_pullup_base(struct os_mbuf **om, int base_len)
-{
-    if (OS_MBUF_PKTLEN(*om) < base_len) {
-        return BLE_HS_EBADDATA;
-    }
-
-    *om = os_mbuf_pullup(*om, base_len);
-    if (*om == NULL) {
-        return BLE_HS_ENOMEM;
-    }
-
-    return 0;
-}
+const uint8_t ble_hs_misc_null_addr[6];
 
 int
 ble_hs_misc_conn_chan_find(uint16_t conn_handle, uint16_t cid,
@@ -129,7 +39,7 @@ ble_hs_misc_conn_chan_find(uint16_t conn_handle, uint16_t cid,
         chan = NULL;
         rc = BLE_HS_ENOTCONN;
     } else {
-        chan = ble_hs_conn_chan_find(conn, cid);
+        chan = ble_hs_conn_chan_find_by_scid(conn, cid);
         if (chan == NULL) {
             rc = BLE_HS_ENOTCONN;
         } else {
@@ -147,7 +57,7 @@ ble_hs_misc_conn_chan_find(uint16_t conn_handle, uint16_t cid,
     return rc;
 }
 
-int
+void
 ble_hs_misc_conn_chan_find_reqd(uint16_t conn_handle, uint16_t cid,
                                 struct ble_hs_conn **out_conn,
                                 struct ble_l2cap_chan **out_chan)
@@ -157,7 +67,7 @@ ble_hs_misc_conn_chan_find_reqd(uint16_t conn_handle, uint16_t cid,
     int rc;
 
     rc = ble_hs_misc_conn_chan_find(conn_handle, cid, &conn, &chan);
-    assert(conn == NULL || chan != NULL);
+    BLE_HS_DBG_ASSERT_EVAL(rc == 0);
 
     if (out_conn != NULL) {
         *out_conn = conn;
@@ -165,6 +75,22 @@ ble_hs_misc_conn_chan_find_reqd(uint16_t conn_handle, uint16_t cid,
     if (out_chan != NULL) {
         *out_chan = chan;
     }
+}
 
-    return rc;
+uint8_t
+ble_hs_misc_addr_type_to_id(uint8_t own_addr_type)
+{
+    switch (own_addr_type) {
+    case BLE_OWN_ADDR_PUBLIC:
+    case BLE_OWN_ADDR_RPA_PUBLIC_DEFAULT:
+         return BLE_ADDR_PUBLIC;
+
+    case BLE_OWN_ADDR_RANDOM:
+    case BLE_OWN_ADDR_RPA_RANDOM_DEFAULT:
+         return BLE_ADDR_RANDOM;
+
+    default:
+        BLE_HS_DBG_ASSERT(0);
+        return BLE_ADDR_PUBLIC;
+    }
 }

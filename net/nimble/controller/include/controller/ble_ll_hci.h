@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -20,23 +20,33 @@
 #ifndef H_BLE_LL_HCI_
 #define H_BLE_LL_HCI_
 
-/* 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* For supported commands */
+#define BLE_LL_SUPP_CMD_LEN (36)
+extern const uint8_t g_ble_ll_supp_cmds[BLE_LL_SUPP_CMD_LEN];
+
+/* The largest event the controller will send. */
+#define BLE_LL_MAX_EVT_LEN  (70)
+
+/*
  * This determines the number of outstanding commands allowed from the
- * host to the controller.
+ * host to the controller. NOTE: you cannot change this without modifying
+ * other portions of the code as we currently use a global os event for
+ * the command; you would need to allocate a pool of these.
  */
 #define BLE_LL_CFG_NUM_HCI_CMD_PKTS     (1)
 
 /* Initialize LL HCI */
 void ble_ll_hci_init(void);
 
-/* HCI command processing function */
-void ble_ll_hci_cmd_proc(struct os_event *ev);
-
 /* Used to determine if the LE event is enabled/disabled */
 uint8_t ble_ll_hci_is_le_event_enabled(int subev);
 
 /* Used to determine if event is enabled/disabled */
-uint8_t ble_ll_hci_is_event_enabled(int bitpos);
+uint8_t ble_ll_hci_is_event_enabled(int evcode);
 
 /* Send event from controller to host */
 int ble_ll_hci_event_send(uint8_t *evbuf);
@@ -44,5 +54,9 @@ int ble_ll_hci_event_send(uint8_t *evbuf);
 /* Sends a command complete with a no-op opcode to host */
 int ble_ll_hci_send_noop(void);
 
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* H_BLE_LL_HCI_ */

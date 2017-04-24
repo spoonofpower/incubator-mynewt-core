@@ -25,9 +25,14 @@ pkg.keywords:
     - ble
     - bluetooth
 
+pkg.req_apis:
+    - ble_driver
+    - ble_transport
+    - stats
+
 pkg.deps:
-    - libs/os
-    - sys/stats
+    - kernel/os
     - net/nimble
-pkg.features:
-    - BLE_DEVICE
+
+pkg.init:
+    ble_ll_init: 250

@@ -27,12 +27,26 @@ pkg.keywords:
     - stm32
     - e407
 
-pkg.arch: cortex_m4
-pkg.compiler: compiler/arm-none-eabi-m4
-pkg.linkerscript: "olimex_stm32-e407_devboard.ld" 
-pkg.linkerscript.bootloader.OVERWRITE: "boot-olimex_stm32-e407_devboard.ld"
-pkg.downloadscript: "olimex_stm32-e407_devboard_download.sh"
-pkg.debugscript: "olimex_stm32-e407_devboard_debug.sh"
-pkg.cflags: -DSTM32F407xx
-pkg.deps: 
+pkg.cflags:
+    # STM SDK files require these defines.
+    - '-DSTM32F407xx'
+
+pkg.cflags.HARDFLOAT:
+    - -mfloat-abi=hard -mfpu=fpv4-sp-d16
+
+pkg.deps:
     - hw/mcu/stm/stm32f4xx
+    - libc/baselibc
+
+pkg.deps.ADC_1:
+    - hw/drivers/adc/adc_stm32f4
+pkg.deps.ADC_2:
+    - hw/drivers/adc/adc_stm32f4
+pkg.deps.ADC_3:
+    - hw/drivers/adc/adc_stm32f4
+
+pkg.deps.UART_0:
+    - hw/drivers/uart/uart_hal
+
+pkg.deps.ETH_0:
+    - hw/drivers/lwip/stm32_eth

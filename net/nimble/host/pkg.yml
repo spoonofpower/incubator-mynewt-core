@@ -26,15 +26,21 @@ pkg.keywords:
     - bluetooth
 
 pkg.deps:
-    - sys/log
-    - sys/stats
-    - libs/os
-    - libs/util
+    - kernel/os
     - net/nimble
-pkg.req_apis:
-    - console
+    - util/mem
 
-# Satisfy capability dependencies for the self-contained test executable.
-pkg.deps.SELFTEST: libs/console/stub
-pkg.cflags.SELFTEST: -DPHONY_TRANSPORT
-pkg.cflags.TEST: -DBLE_HS_DEBUG
+pkg.deps.BLE_SM_LEGACY:
+    - crypto/tinycrypt
+
+pkg.deps.BLE_SM_SC:
+    - crypto/tinycrypt
+
+pkg.req_apis:
+    - ble_transport
+    - console
+    - log
+    - stats
+
+pkg.init:
+    ble_hs_init: 200

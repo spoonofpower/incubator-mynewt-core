@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,7 +24,6 @@
 #include "os/os_mempool.h"
 #include "nffs/nffs.h"
 #include "nffs_priv.h"
-#include "crc16.h"
 
 /* Partition the flash buffer into two equal halves; used for filename
  * comparisons.
@@ -54,9 +53,35 @@ void
 nffs_inode_entry_free(struct nffs_inode_entry *inode_entry)
 {
     if (inode_entry != NULL) {
+        assert(!nffs_inode_getflags(inode_entry, NFFS_INODE_FLAG_INHASH));
         assert(nffs_hash_id_is_inode(inode_entry->nie_hash_entry.nhe_id));
         os_memblock_put(&nffs_inode_entry_pool, inode_entry);
     }
+}
+
+/**
+ * Allocates a inode entry.  If allocation fails due to memory exhaustion,
+ * garbage collection is performed and the allocation is retried.  This
+ * process is repeated until allocation is successful or all areas have been
+ * garbage collected.
+ *
+ * @param out_inode_entry           On success, the address of the allocated
+ *                                      inode gets written here.
+ *
+ * @return                          0 on successful allocation;
+ *                                  FS_ENOMEM on memory exhaustion;
+ *                                  other nonzero on garbage collection error.
+ */
+int
+nffs_inode_entry_reserve(struct nffs_inode_entry **out_inode_entry)
+{
+    int rc;
+
+    do {
+        *out_inode_entry = nffs_inode_entry_alloc();
+    } while (nffs_misc_gc_if_oom(*out_inode_entry, &rc));
+
+    return rc;
 }
 
 uint32_t
@@ -71,12 +96,13 @@ nffs_inode_read_disk(uint8_t area_idx, uint32_t offset,
 {
     int rc;
 
+    STATS_INC(nffs_stats, nffs_readcnt_inode);
     rc = nffs_flash_read(area_idx, offset, out_disk_inode,
                          sizeof *out_disk_inode);
     if (rc != 0) {
         return rc;
     }
-    if (out_disk_inode->ndi_magic != NFFS_INODE_MAGIC) {
+    if (!nffs_hash_id_is_inode(out_disk_inode->ndi_id)) {
         return FS_EUNEXP;
     }
 
@@ -89,6 +115,9 @@ nffs_inode_write_disk(const struct nffs_disk_inode *disk_inode,
                       uint32_t area_offset)
 {
     int rc;
+
+    /* Only the DELETED flag is ever written out to flash */
+    assert((disk_inode->ndi_flags & ~NFFS_INODE_FLAG_DELETED) == 0);
 
     rc = nffs_flash_write(area_idx, area_offset, disk_inode,
                           sizeof *disk_inode);
@@ -122,6 +151,7 @@ nffs_inode_calc_data_length(struct nffs_inode_entry *inode_entry,
 
     *out_len = 0;
 
+    inode_entry->nie_blkcnt = 0;
     cur = inode_entry->nie_last_block_entry;
     while (cur != NULL) {
         rc = nffs_block_from_hash_entry(&block, cur);
@@ -130,6 +160,7 @@ nffs_inode_calc_data_length(struct nffs_inode_entry *inode_entry,
         }
 
         *out_len += block.nb_data_len;
+        inode_entry->nie_blkcnt++;
 
         cur = block.nb_prev;
     }
@@ -153,6 +184,14 @@ nffs_inode_data_len(struct nffs_inode_entry *inode_entry, uint32_t *out_len)
     return 0;
 }
 
+static void
+nffs_inode_restore_from_dummy_entry(struct nffs_inode *out_inode,
+                                    struct nffs_inode_entry *inode_entry)
+{
+    memset(out_inode, 0, sizeof *out_inode);
+    out_inode->ni_inode_entry = inode_entry;
+}
+
 int
 nffs_inode_from_entry(struct nffs_inode *out_inode,
                       struct nffs_inode_entry *entry)
@@ -162,6 +201,13 @@ nffs_inode_from_entry(struct nffs_inode *out_inode,
     uint8_t area_idx;
     int cached_name_len;
     int rc;
+
+    memset(out_inode, 0, sizeof *out_inode);
+
+    if (nffs_inode_is_dummy(entry)) {
+        nffs_inode_restore_from_dummy_entry(out_inode, entry);
+        return FS_ENOENT;
+    }
 
     nffs_flash_loc_expand(entry->nie_hash_entry.nhe_flash_loc,
                           &area_idx, &area_offset);
@@ -173,6 +219,11 @@ nffs_inode_from_entry(struct nffs_inode *out_inode,
 
     out_inode->ni_inode_entry = entry;
     out_inode->ni_seq = disk_inode.ndi_seq;
+
+    /*
+     * Relink to parent if possible
+     * XXX does this belong here?
+     */
     if (disk_inode.ndi_parent_id == NFFS_ID_NONE) {
         out_inode->ni_parent = NULL;
     } else {
@@ -186,11 +237,17 @@ nffs_inode_from_entry(struct nffs_inode *out_inode,
         cached_name_len = out_inode->ni_filename_len;
     }
     if (cached_name_len != 0) {
+        STATS_INC(nffs_stats, nffs_readcnt_inodeent);
         rc = nffs_flash_read(area_idx, area_offset + sizeof disk_inode,
                              out_inode->ni_filename, cached_name_len);
         if (rc != 0) {
             return rc;
         }
+    }
+
+    if (disk_inode.ndi_flags & NFFS_INODE_FLAG_DELETED) {
+        nffs_inode_setflags(out_inode->ni_inode_entry, NFFS_INODE_FLAG_DELETED);
+        nffs_inode_setflags(entry, NFFS_INODE_FLAG_DELETED);
     }
 
     return 0;
@@ -222,14 +279,6 @@ nffs_inode_delete_blocks_from_ram(struct nffs_inode_entry *inode_entry)
 
     return 0;
 }
-            /* The block references something that does not exist in RAM.  This
-             * is likely because the pointed-to object was in an area that has
-             * been garbage collected.  Terminate the delete procedure and
-             * report success.
-             */
-            /* XXX: This does not inspire confidence; the caller should somehow
-             * indicate that it expects this possibility.
-             */
 
 /**
  * Deletes the specified inode entry from the RAM representation.
@@ -252,6 +301,11 @@ nffs_inode_delete_from_ram(struct nffs_inode_entry *inode_entry,
     int rc;
 
     if (nffs_hash_id_is_file(inode_entry->nie_hash_entry.nhe_id)) {
+        /*
+         * Record the intention to delete the file
+         */
+        nffs_inode_setflags(inode_entry, NFFS_INODE_FLAG_DELETED);
+
         rc = nffs_inode_delete_blocks_from_ram(inode_entry);
         if (rc == FS_ECORRUPT && ignore_corruption) {
             inode_entry->nie_last_block_entry = NULL;
@@ -261,6 +315,10 @@ nffs_inode_delete_from_ram(struct nffs_inode_entry *inode_entry,
     }
 
     nffs_cache_inode_delete(inode_entry);
+    /*
+     * XXX Not deleting empty inode delete records from hash could prevent
+     * a case where we could lose delete records in a gc operation
+     */
     nffs_hash_remove(&inode_entry->nie_hash_entry);
     nffs_inode_entry_free(inode_entry);
 
@@ -288,6 +346,7 @@ nffs_inode_dec_refcnt_priv(struct nffs_inode_entry *inode_entry,
 {
     int rc;
 
+    assert(inode_entry);
     assert(inode_entry->nie_refcnt > 0);
 
     inode_entry->nie_refcnt--;
@@ -302,6 +361,14 @@ nffs_inode_dec_refcnt_priv(struct nffs_inode_entry *inode_entry,
         }
     }
 
+    return 0;
+}
+
+int
+nffs_inode_inc_refcnt(struct nffs_inode_entry *inode_entry)
+{
+    assert(inode_entry);
+    inode_entry->nie_refcnt++;
     return 0;
 }
 
@@ -370,6 +437,8 @@ nffs_inode_process_unlink_list(struct nffs_hash_entry **inout_next,
             child = child_next;
         }
 
+
+
         /* The directory is already removed from the hash table; just free its
          * memory.
          */
@@ -397,14 +466,37 @@ nffs_inode_delete_from_disk(struct nffs_inode *inode)
 
     inode->ni_seq++;
 
-    disk_inode.ndi_magic = NFFS_INODE_MAGIC;
+    memset(&disk_inode, 0, sizeof disk_inode);
     disk_inode.ndi_id = inode->ni_inode_entry->nie_hash_entry.nhe_id;
     disk_inode.ndi_seq = inode->ni_seq;
     disk_inode.ndi_parent_id = NFFS_ID_NONE;
+    disk_inode.ndi_flags = NFFS_INODE_FLAG_DELETED;
+    if (inode->ni_inode_entry->nie_last_block_entry) {
+        disk_inode.ndi_lastblock_id =
+                          inode->ni_inode_entry->nie_last_block_entry->nhe_id;
+    } else {
+        disk_inode.ndi_lastblock_id = NFFS_ID_NONE;
+    }
     disk_inode.ndi_filename_len = 0;
     nffs_crc_disk_inode_fill(&disk_inode, "");
 
     rc = nffs_inode_write_disk(&disk_inode, "", area_idx, offset);
+    NFFS_LOG(DEBUG, "inode_del_disk: wrote unlinked ino %x to disk ref %d\n",
+               (unsigned int)disk_inode.ndi_id,
+               inode->ni_inode_entry->nie_refcnt);
+
+    /*
+     * Flag the incore inode as deleted to the inode won't get updated to
+     * disk. This could happen if the refcnt > 0 and there are future appends
+     * XXX only do this for files and not directories
+     */
+    if (nffs_hash_id_is_file(inode->ni_inode_entry->nie_hash_entry.nhe_id)) {
+        nffs_inode_setflags(inode->ni_inode_entry, NFFS_INODE_FLAG_DELETED);
+        NFFS_LOG(DEBUG, "inode_delete_from_disk: ino %x flag DELETE\n",
+                   (unsigned int)inode->ni_inode_entry->nie_hash_entry.nhe_id);
+
+    }
+
     if (rc != 0) {
         return rc;
     }
@@ -412,17 +504,70 @@ nffs_inode_delete_from_disk(struct nffs_inode *inode)
     return 0;
 }
 
+/**
+ * Determines if an inode is an ancestor of another.
+ *
+ * NOTE: If the two inodes are equal, a positive result is indicated.
+ *
+ * @param anc                   The potential ancestor.
+ * @param des                   The potential descendent.
+ * @param out_is_ancestor       On success, the result gets written here
+ *                                  (1 if an ancestor relationship is
+ *                                  detected).
+ *
+ * @return                      0 on success; FS_E[...] on error.
+ */
+static int
+nffs_inode_is_ancestor(struct nffs_inode_entry *anc,
+                       struct nffs_inode_entry *des,
+                       int *out_is_ancestor)
+{
+    struct nffs_inode_entry *cur;
+    struct nffs_inode inode;
+    int rc;
+
+    /* Only directories can be ancestors. */
+    if (!nffs_hash_id_is_dir(anc->nie_hash_entry.nhe_id)) {
+        *out_is_ancestor = 0;
+        return 0;
+    }
+
+    /* Trace des's heritage until we hit anc or there are no more parents. */
+    cur = des;
+    while (cur != NULL && cur != anc) {
+        rc = nffs_inode_from_entry(&inode, cur);
+        if (rc != 0) {
+            *out_is_ancestor = 0;
+            return rc;
+        }
+        cur = inode.ni_parent;
+    }
+
+    *out_is_ancestor = cur == anc;
+    return 0;
+}
+
 int
 nffs_inode_rename(struct nffs_inode_entry *inode_entry,
-                 struct nffs_inode_entry *new_parent,
-                 const char *new_filename)
+                  struct nffs_inode_entry *new_parent,
+                  const char *new_filename)
 {
     struct nffs_disk_inode disk_inode;
     struct nffs_inode inode;
     uint32_t area_offset;
     uint8_t area_idx;
     int filename_len;
+    int ancestor;
     int rc;
+
+    /* Don't allow a directory to be moved into a descendent directory. */
+    rc = nffs_inode_is_ancestor(inode_entry, new_parent, &ancestor);
+    if (rc != 0) {
+        return rc;
+    }
+    if (ancestor) {
+        return FS_EINVAL;
+    }
 
     rc = nffs_inode_from_entry(&inode, inode_entry);
     if (rc != 0) {
@@ -448,6 +593,8 @@ nffs_inode_rename(struct nffs_inode_entry *inode_entry,
         filename_len = inode.ni_filename_len;
         nffs_flash_loc_expand(inode_entry->nie_hash_entry.nhe_flash_loc,
                               &area_idx, &area_offset);
+
+        STATS_INC(nffs_stats, nffs_readcnt_rename);
         rc = nffs_flash_read(area_idx,
                              area_offset + sizeof (struct nffs_disk_inode),
                              nffs_flash_buf, filename_len);
@@ -464,11 +611,17 @@ nffs_inode_rename(struct nffs_inode_entry *inode_entry,
         return rc;
     }
 
-    disk_inode.ndi_magic = NFFS_INODE_MAGIC;
+    memset(&disk_inode, 0, sizeof disk_inode);
     disk_inode.ndi_id = inode_entry->nie_hash_entry.nhe_id;
     disk_inode.ndi_seq = inode.ni_seq + 1;
     disk_inode.ndi_parent_id = nffs_inode_parent_id(&inode);
+    disk_inode.ndi_flags = 0;
     disk_inode.ndi_filename_len = filename_len;
+    if (inode_entry->nie_last_block_entry &&
+        inode_entry->nie_last_block_entry->nhe_id != NFFS_ID_NONE)
+        disk_inode.ndi_lastblock_id = inode_entry->nie_last_block_entry->nhe_id;
+    else 
+        disk_inode.ndi_lastblock_id = NFFS_ID_NONE;
     nffs_crc_disk_inode_fill(&disk_inode, new_filename);
 
     rc = nffs_inode_write_disk(&disk_inode, new_filename, area_idx,
@@ -480,6 +633,76 @@ nffs_inode_rename(struct nffs_inode_entry *inode_entry,
     inode_entry->nie_hash_entry.nhe_flash_loc =
         nffs_flash_loc(area_idx, area_offset);
 
+    return 0;
+}
+
+int
+nffs_inode_update(struct nffs_inode_entry *inode_entry)
+{
+    struct nffs_disk_inode disk_inode;
+    struct nffs_inode inode;
+    uint32_t area_offset;
+    uint8_t area_idx;
+    char *filename;
+    int filename_len;
+    int rc;
+
+    rc = nffs_inode_from_entry(&inode, inode_entry);
+    /*
+     * if rc == FS_ENOENT, file is dummy is unlinked and so
+     * can not be updated to disk.
+     */
+    if (rc == FS_ENOENT)
+        assert(nffs_inode_is_dummy(inode_entry));
+    if (rc != 0) {
+        return rc;
+    }
+
+    assert(inode_entry->nie_hash_entry.nhe_flash_loc != NFFS_FLASH_LOC_NONE);
+
+    filename_len = inode.ni_filename_len;
+    nffs_flash_loc_expand(inode_entry->nie_hash_entry.nhe_flash_loc,
+                          &area_idx, &area_offset);
+    STATS_INC(nffs_stats, nffs_readcnt_update);
+    rc = nffs_flash_read(area_idx,
+                         area_offset + sizeof (struct nffs_disk_inode),
+                         nffs_flash_buf, filename_len);
+    if (rc != 0) {
+        return rc;
+    }
+
+    filename = (char *)nffs_flash_buf;
+
+    rc = nffs_misc_reserve_space(sizeof disk_inode + filename_len,
+                                 &area_idx, &area_offset);
+    if (rc != 0) {
+        return rc;
+    }
+
+    memset(&disk_inode, 0, sizeof disk_inode);
+    disk_inode.ndi_id = inode_entry->nie_hash_entry.nhe_id;
+    disk_inode.ndi_seq = inode.ni_seq + 1;
+    disk_inode.ndi_parent_id = nffs_inode_parent_id(&inode);
+    disk_inode.ndi_flags = 0;
+    disk_inode.ndi_filename_len = filename_len;
+
+    assert(nffs_hash_id_is_block(inode_entry->nie_last_block_entry->nhe_id));
+    disk_inode.ndi_lastblock_id = inode_entry->nie_last_block_entry->nhe_id;
+
+    nffs_crc_disk_inode_fill(&disk_inode, filename);
+
+    NFFS_LOG(DEBUG, "nffs_inode_update writing inode %x last block %x\n",
+             (unsigned int)disk_inode.ndi_id,
+             (unsigned int)disk_inode.ndi_lastblock_id);
+
+    rc = nffs_inode_write_disk(&disk_inode, filename, area_idx,
+                               area_offset);
+    if (rc != 0) {
+        return rc;
+    }
+
+    inode_entry->nie_hash_entry.nhe_flash_loc =
+        nffs_flash_loc(area_idx, area_offset);
     return 0;
 }
 
@@ -497,6 +720,7 @@ nffs_inode_read_filename_chunk(const struct nffs_inode *inode,
                           &area_idx, &area_offset);
     area_offset += sizeof (struct nffs_disk_inode) + filename_offset;
 
+    STATS_INC(nffs_stats, nffs_readcnt_filename);
     rc = nffs_flash_read(area_idx, area_offset, buf, len);
     if (rc != 0) {
         return rc;
@@ -562,6 +786,7 @@ nffs_inode_add_child(struct nffs_inode_entry *parent,
     int rc;
 
     assert(nffs_hash_id_is_dir(parent->nie_hash_entry.nhe_id));
+    assert(!nffs_inode_getflags(child, NFFS_INODE_FLAG_INTREE));
 
     rc = nffs_inode_from_entry(&child_inode, child);
     if (rc != 0) {
@@ -593,6 +818,7 @@ nffs_inode_add_child(struct nffs_inode_entry *parent,
     } else {
         SLIST_INSERT_AFTER(prev, child, nie_sibling_next);
     }
+    nffs_inode_setflags(child, NFFS_INODE_FLAG_INTREE);
 
     return 0;
 }
@@ -602,12 +828,14 @@ nffs_inode_remove_child(struct nffs_inode *child)
 {
     struct nffs_inode_entry *parent;
 
+    assert(nffs_inode_getflags(child->ni_inode_entry, NFFS_INODE_FLAG_INTREE));
     parent = child->ni_parent;
     assert(parent != NULL);
     assert(nffs_hash_id_is_dir(parent->nie_hash_entry.nhe_id));
     SLIST_REMOVE(&parent->nie_child_list, child->ni_inode_entry,
                  nffs_inode_entry, nie_sibling_next);
     SLIST_NEXT(child->ni_inode_entry, nie_sibling_next) = NULL;
+    nffs_inode_unsetflags(child->ni_inode_entry, NFFS_INODE_FLAG_INTREE);
 }
 
 int
@@ -662,6 +890,9 @@ nffs_inode_filename_cmp_ram(const struct nffs_inode *inode,
     return 0;
 }
 
+/*
+ * Compare filenames in flash
+ */
 int
 nffs_inode_filename_cmp_flash(const struct nffs_inode *inode1,
                               const struct nffs_inode *inode2,
@@ -898,6 +1129,12 @@ nffs_inode_unlink_from_ram_priv(struct nffs_inode *inode,
         nffs_inode_remove_child(inode);
     }
 
+    /*
+     * Regardless of whether the inode is removed from hashlist, we record
+     * the intention to delete it here.
+     */
+    nffs_inode_setflags(inode->ni_inode_entry, NFFS_INODE_FLAG_DELETED);
+
     if (nffs_hash_id_is_dir(inode->ni_inode_entry->nie_hash_entry.nhe_id)) {
         nffs_inode_insert_unlink_list(inode->ni_inode_entry);
         rc = nffs_inode_process_unlink_list(out_next, ignore_corruption);
@@ -997,4 +1234,60 @@ nffs_inode_unlink(struct nffs_inode *inode)
     }
 
     return 0;
+}
+
+/*
+ * Return true if inode is a dummy inode, that was allocated as a
+ * place holder in the case that an inode is restored before it's parent.
+ */
+int
+nffs_inode_is_dummy(struct nffs_inode_entry *inode_entry)
+{
+    if (inode_entry->nie_flash_loc == NFFS_FLASH_LOC_NONE) {
+        /*
+         * set if not already XXX can delete after debug
+         */
+        nffs_inode_setflags(inode_entry, NFFS_INODE_FLAG_DUMMY);
+        return 1;
+    }
+
+    if (inode_entry == nffs_root_dir) {
+        return 0;
+    } else {
+        return nffs_inode_getflags(inode_entry, NFFS_INODE_FLAG_DUMMY);
+    }
+}
+
+/*
+ * Return true if inode is marked as deleted.
+ */
+int
+nffs_inode_is_deleted(struct nffs_inode_entry *inode_entry)
+{
+    assert(inode_entry);
+
+    return nffs_inode_getflags(inode_entry, NFFS_INODE_FLAG_DELETED);
+}
+
+int
+nffs_inode_setflags(struct nffs_inode_entry *entry, uint8_t flag)
+{
+    /*
+     * We shouldn't be setting flags to already deleted inodes
+     */
+    entry->nie_flags |= flag;
+    return (int)entry->nie_flags;
+}
+
+int
+nffs_inode_unsetflags(struct nffs_inode_entry *entry, uint8_t flag)
+{
+    entry->nie_flags &= ~flag;
+    return (int)entry->nie_flags;
+}
+
+int
+nffs_inode_getflags(struct nffs_inode_entry *entry, uint8_t flag)
+{
+    return (int)(entry->nie_flags & flag);
 }

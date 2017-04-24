@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -19,20 +19,21 @@
 
 #include <string.h>
 #include <assert.h>
-
-#include "mcu/nrf.h"
+#include "nrf.h"
 #include "mcu/nrf52_hal.h"
-
 #include <hal/hal_flash_int.h>
 
 #define NRF52K_FLASH_SECTOR_SZ	4096
 
-static int nrf52k_flash_read(uint32_t address, void *dst, uint32_t num_bytes);
-static int nrf52k_flash_write(uint32_t address, const void *src,
-  uint32_t num_bytes);
-static int nrf52k_flash_erase_sector(uint32_t sector_address);
-static int nrf52k_flash_sector_info(int idx, uint32_t *address, uint32_t *sz);
-static int nrf52k_flash_init(void);
+static int nrf52k_flash_read(const struct hal_flash *dev, uint32_t address,
+        void *dst, uint32_t num_bytes);
+static int nrf52k_flash_write(const struct hal_flash *dev, uint32_t address,
+        const void *src, uint32_t num_bytes);
+static int nrf52k_flash_erase_sector(const struct hal_flash *dev,
+        uint32_t sector_address);
+static int nrf52k_flash_sector_info(const struct hal_flash *dev, int idx,
+        uint32_t *address, uint32_t *sz);
+static int nrf52k_flash_init(const struct hal_flash *dev);
 
 static const struct hal_flash_funcs nrf52k_flash_funcs = {
     .hff_read = nrf52k_flash_read,
@@ -42,6 +43,15 @@ static const struct hal_flash_funcs nrf52k_flash_funcs = {
     .hff_init = nrf52k_flash_init
 };
 
+#ifdef NRF52840_XXAA
+const struct hal_flash nrf52k_flash_dev = {
+    .hf_itf = &nrf52k_flash_funcs,
+    .hf_base_addr = 0x00000000,
+    .hf_size = 1024 * 1024,	/* XXX read from factory info? */
+    .hf_sector_cnt = 256,	/* XXX read from factory info? */
+    .hf_align = 1
+};
+#elif defined(NRF52832_XXAA)
 const struct hal_flash nrf52k_flash_dev = {
     .hf_itf = &nrf52k_flash_funcs,
     .hf_base_addr = 0x00000000,
@@ -49,6 +59,9 @@ const struct hal_flash nrf52k_flash_dev = {
     .hf_sector_cnt = 128,	/* XXX read from factory info? */
     .hf_align = 1
 };
+#else
+#error "Must define hal_flash struct for NRF52 type"
+#endif
 
 #define NRF52K_FLASH_READY() (NRF_NVMC->READY == NVMC_READY_READY_Ready)
 
@@ -66,7 +79,8 @@ nrf52k_flash_wait_ready(void)
 }
 
 static int
-nrf52k_flash_read(uint32_t address, void *dst, uint32_t num_bytes)
+nrf52k_flash_read(const struct hal_flash *dev, uint32_t address, void *dst,
+        uint32_t num_bytes)
 {
     memcpy(dst, (void *)address, num_bytes);
     return 0;
@@ -76,7 +90,8 @@ nrf52k_flash_read(uint32_t address, void *dst, uint32_t num_bytes)
  * Flash write is done by writing 4 bytes at a time at a word boundary.
  */
 static int
-nrf52k_flash_write(uint32_t address, const void *src, uint32_t num_bytes)
+nrf52k_flash_write(const struct hal_flash *dev, uint32_t address,
+        const void *src, uint32_t num_bytes)
 {
     int sr;
     int rc = -1;
@@ -88,7 +103,7 @@ nrf52k_flash_write(uint32_t address, const void *src, uint32_t num_bytes)
         return -1;
     }
     __HAL_DISABLE_INTERRUPTS(sr);
-    NRF_NVMC->CONFIG |= NVMC_CONFIG_WEN_Wen; /* Enable erase OP */
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen; /* Enable erase OP */
     tmp = address & 0x3;
     if (tmp) {
         if (nrf52k_flash_wait_ready()) {
@@ -138,13 +153,13 @@ nrf52k_flash_write(uint32_t address, const void *src, uint32_t num_bytes)
         goto out;
     }
 out:
-    NRF_NVMC->CONFIG &= ~NVMC_CONFIG_WEN_Wen;
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren;
     __HAL_ENABLE_INTERRUPTS(sr);
     return rc;
 }
 
 static int
-nrf52k_flash_erase_sector(uint32_t sector_address)
+nrf52k_flash_erase_sector(const struct hal_flash *dev, uint32_t sector_address)
 {
     int sr;
     int rc = -1;
@@ -153,7 +168,7 @@ nrf52k_flash_erase_sector(uint32_t sector_address)
         return -1;
     }
     __HAL_DISABLE_INTERRUPTS(sr);
-    NRF_NVMC->CONFIG |= NVMC_CONFIG_WEN_Een; /* Enable erase OP */
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een; /* Enable erase OP */
     if (nrf52k_flash_wait_ready()) {
         goto out;
     }
@@ -164,13 +179,14 @@ nrf52k_flash_erase_sector(uint32_t sector_address)
     }
     rc = 0;
 out:
-    NRF_NVMC->CONFIG &= ~NVMC_CONFIG_WEN_Een; /* Disable erase OP */
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren; /* Disable erase OP */
     __HAL_ENABLE_INTERRUPTS(sr);
     return rc;
 }
 
 static int
-nrf52k_flash_sector_info(int idx, uint32_t *address, uint32_t *sz)
+nrf52k_flash_sector_info(const struct hal_flash *dev, int idx,
+        uint32_t *address, uint32_t *sz)
 {
     assert(idx < nrf52k_flash_dev.hf_sector_cnt);
     *address = idx * NRF52K_FLASH_SECTOR_SZ;
@@ -179,7 +195,7 @@ nrf52k_flash_sector_info(int idx, uint32_t *address, uint32_t *sz)
 }
 
 static int
-nrf52k_flash_init(void)
+nrf52k_flash_init(const struct hal_flash *dev)
 {
     return 0;
 }

@@ -25,12 +25,11 @@ pkg.homepage: "http://mynewt.apache.org/"
 pkg.keywords:
     - loader
 
-pkg.features: bootloader
 pkg.deps:
-    - fs/nffs
-    - libs/baselibc
-    - libs/bootutil
-    - libs/console/stub
-    - libs/mbedtls
-    - libs/os
-    - libs/util
+    - boot/bootutil
+    - kernel/os
+    - sys/console/stub
+
+pkg.deps.BOOT_SERIAL.OVERWRITE:
+    - sys/console/minimal
+    - boot/boot_serial

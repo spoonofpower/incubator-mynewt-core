@@ -26,10 +26,8 @@ pkg.keywords:
     - filesystem
     - ffs
 
-pkg.deps.SHELL:
-    - libs/shell
-pkg.req_apis.SHELL:
-    - console
-pkg.cflags.SHELL: -DSHELL_PRESENT
-pkg.features:
-    - FS
+pkg.deps:
+    - fs/disk
+
+pkg.deps.FS_CLI:
+    - sys/shell

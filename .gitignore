@@ -25,10 +25,15 @@ tags
 .gdb_history
 .gdb_out
 .gdb_cmds
+.gdbinit
 *~
 .DS_Store
 *.swp
 *.swo
+*.bak
+docs/html
+docs/latex
+cscope.*
 
 # Prevent accidental checkins of personal targets.  If you need to commit a
 # target, specify the -f option for "git add".

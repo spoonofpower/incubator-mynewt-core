@@ -16,31 +16,21 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-# Called: $0 <bsp_directory_path> <binary> [features...]
-#  - bsp_directory_path is absolute path to hw/bsp/bsp_name
-#  - binary is the path to prefix to target binary, .elf.bin appended to this
-#    name is the raw binary format of the binary.
-#  - features are the target features. So you can have e.g. different
-#    flash offset for bootloader 'feature'
-# 
+
+# Called with following variables set:
+#  - CORE_PATH is absolute path to @apache-mynewt-core
+#  - BSP_PATH is absolute path to hw/bsp/bsp_name
+#  - BIN_BASENAME is the path to prefix to target binary,
+#    .elf appended to name is the ELF file
+#  - FEATURES holds the target features string
+#  - EXTRA_JTAG_CMD holds extra parameters to pass to jtag software
+#  - RESET set if target should be reset when attaching
+#  - NO_GDB set if we should not start gdb to debug
 #
-if [ $# -lt 2 ]; then
-    echo "Need binary to download"
-    exit 1
-fi
 
-FILE_NAME=$2.elf
-GDB_CMD_FILE=.gdb_cmds
+. $CORE_PATH/hw/scripts/jlink.sh
 
-echo "Debugging" $FILE_NAME
+FILE_NAME=$BIN_BASENAME.elf
+JLINK_DEV="nRF51422_xxAC"
 
-set -m
-JLinkGDBServer -device nRF51422_xxAC -speed 4000 -if SWD -port 3333 -singlerun &
-set +m
-
-echo "target remote localhost:3333" > $GDB_CMD_FILE
-
-arm-none-eabi-gdb -x $GDB_CMD_FILE $FILE_NAME
-
-rm $GDB_CMD_FILE
-
+jlink_debug

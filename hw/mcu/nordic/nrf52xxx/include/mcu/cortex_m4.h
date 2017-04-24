@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,7 +6,7 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *  http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -20,6 +20,26 @@
 #ifndef __MCU_CORTEX_M4_H__
 #define __MCU_CORTEX_M4_H__
 
-#include "mcu/nrf52.h"
+#include "syscfg/syscfg.h"
+
+#ifdef NRF52840_XXAA
+#include "nrf52840.h"
+#else
+#include "nrf52.h"
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#if MYNEWT_VAL(XTAL_32768)
+#define OS_TICKS_PER_SEC    (128)
+#else
+#define OS_TICKS_PER_SEC    (1000)
+#endif
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* __MCU_CORTEX_M4_H__ */
